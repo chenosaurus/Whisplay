@@ -11,6 +11,7 @@ spidev = "0.6"
 thiserror = "1"
 
 [dev-dependencies]
+ctrlc = { version = "3.5.2", features = ["termination"] }
 
 [[example]]
 name = "play_mp4"
