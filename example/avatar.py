@@ -22,6 +22,7 @@ except ImportError:
 
 
 EMOTIONS = ("happy", "curious", "excited", "sleepy", "thinking", "sad")
+AVATAR_DIRTY_RECT = (18, 10, 222, 240)
 
 
 def rgb_to_rgb565be(image, out=None):
@@ -214,7 +215,11 @@ def run_avatar(initial_emotion, fps, speaking, auto_cycle):
     running = True
     last_cycle = time.monotonic()
     frame_delay = 1.0 / max(1, fps)
-    frame_buffer = bytearray(board.LCD_WIDTH * board.LCD_HEIGHT * 2)
+    dirty_x0, dirty_y0, dirty_x1, dirty_y1 = AVATAR_DIRTY_RECT
+    dirty_width = dirty_x1 - dirty_x0
+    dirty_height = dirty_y1 - dirty_y0
+    background_buffer = bytearray(board.LCD_WIDTH * board.LCD_HEIGHT * 2)
+    frame_buffer = bytearray(dirty_width * dirty_height * 2)
     next_frame_at = time.monotonic()
 
     def stop(_signum=None, _frame=None):
@@ -232,6 +237,8 @@ def run_avatar(initial_emotion, fps, speaking, auto_cycle):
     board.on_button_press(next_emotion)
     board.set_rgb(0, 0, 0)
     board.set_backlight(80)
+    rgb_to_rgb565be(avatar.background, background_buffer)
+    board.draw_image(0, 0, board.LCD_WIDTH, board.LCD_HEIGHT, background_buffer)
 
     print("Animating robot avatar. Press the WhisPlay button to change emotion, Ctrl+C to exit.")
 
@@ -243,8 +250,8 @@ def run_avatar(initial_emotion, fps, speaking, auto_cycle):
 
             voice_active = speaking or (emotion == "excited" and int(now * 2) % 2 == 0)
             frame = avatar.draw_frame(emotion, speaking=voice_active, t=now)
-            rgb_to_rgb565be(frame, frame_buffer)
-            board.draw_image(0, 0, board.LCD_WIDTH, board.LCD_HEIGHT, frame_buffer)
+            rgb_to_rgb565be(frame.crop(AVATAR_DIRTY_RECT), frame_buffer)
+            board.draw_image(dirty_x0, dirty_y0, dirty_width, dirty_height, frame_buffer)
 
             next_frame_at += frame_delay
             sleep_for = next_frame_at - time.monotonic()
