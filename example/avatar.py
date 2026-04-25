@@ -43,7 +43,7 @@ EMULATED_SPEECH_LEVELS = {
     "5": 1.0,
 }
 BOB_AMPLITUDE = 4.0
-BOB_SPEED = 1.05
+BOB_SPEED = 1.8
 
 
 def create_board(emulated=False, emulator_scale=None):
