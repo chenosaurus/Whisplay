@@ -24,6 +24,8 @@ class EmulatedWhisPlayBoard:
         self._button_down = False
         self._button_press_callback = None
         self._button_release_callback = None
+        self._key_press_callback = None
+        self._key_release_callback = None
         self._current_r = 0
         self._current_g = 0
         self._current_b = 0
@@ -141,6 +143,12 @@ class EmulatedWhisPlayBoard:
     def on_button_release(self, callback):
         self._button_release_callback = callback
 
+    def on_key_press(self, callback):
+        self._key_press_callback = callback
+
+    def on_key_release(self, callback):
+        self._key_release_callback = callback
+
     def cleanup(self):
         if not self._closed:
             self._closed = True
@@ -163,10 +171,14 @@ class EmulatedWhisPlayBoard:
                     self._button_down = True
                     if self._button_press_callback:
                         self._button_press_callback()
+                elif self._key_press_callback:
+                    self._key_press_callback(getattr(event, "unicode", "") or pygame.key.name(event.key), event.key)
             elif event.type == pygame.KEYUP and event.key == pygame.K_SPACE:
                 self._button_down = False
                 if self._button_release_callback:
                     self._button_release_callback()
+            elif event.type == pygame.KEYUP and self._key_release_callback:
+                self._key_release_callback(getattr(event, "unicode", "") or pygame.key.name(event.key), event.key)
 
     def _present(self):
         pygame = self._pygame

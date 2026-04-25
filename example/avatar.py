@@ -14,8 +14,34 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-EMOTIONS = ("happy", "curious", "excited", "sleepy", "thinking", "sad")
+FACE_SEQUENCE = (
+    "happy",
+    "wink",
+    "worried",
+    "angry",
+    "neutral",
+    "love",
+    "surprised",
+    "bored",
+    "joy",
+    "sad",
+)
+EMOTION_ALIASES = {
+    "curious": "surprised",
+    "excited": "joy",
+    "sleepy": "bored",
+    "thinking": "neutral",
+}
+EMOTIONS = FACE_SEQUENCE + tuple(EMOTION_ALIASES)
 AVATAR_DIRTY_RECT = (20, 44, 220, 220)
+MOUTH_OVERLAY_RECT = (70, 132, 170, 192)
+EMULATED_SPEECH_LEVELS = {
+    "1": 0.15,
+    "2": 0.35,
+    "3": 0.55,
+    "4": 0.75,
+    "5": 1.0,
+}
 
 
 def create_board(emulated=False, emulator_scale=None):
@@ -70,13 +96,16 @@ class RobotAvatar:
             self.next_blink = now + random.uniform(2.0, 5.0)
         return now < self.blink_until
 
-    def draw_frame(self, emotion, speaking=False, t=0.0):
+    def draw_frame(self, emotion, speaking=False, t=0.0, speech_level=None):
         img = self.background.copy()
         draw = ImageDraw.Draw(img)
 
         blink = self.maybe_blink(time.monotonic())
+        self._draw_mouth(draw, emotion, t)
+        if speaking or speech_level is not None:
+            self._draw_speech_mouth_overlay(img, t, speech_level=speech_level)
+            draw = ImageDraw.Draw(img)
         self._draw_eyes(draw, emotion, blink, t)
-        self._draw_mouth(draw, emotion, speaking, t)
 
         return img
 
@@ -92,167 +121,175 @@ class RobotAvatar:
     def _face_bg(self):
         return (1, 4, 12)
 
-    def _draw_star(self, draw, cx, cy, radius, color):
-        draw.line((cx - radius, cy, cx + radius, cy), fill=color, width=2)
-        draw.line((cx, cy - radius, cx, cy + radius), fill=color, width=2)
-        draw.point((cx, cy), fill=(255, 255, 255))
+    def _bob(self, t):
+        return int(round(math.sin(t * 1.6) * 6))
 
-    def _draw_eye_capsule(self, draw, box, fill, sparkle=True):
-        x0, y0, x1, y1 = box
-        bg = self._face_bg()
-        accent = (255, 117, 203)
-        shadow = (5, 24, 45)
+    def _cyan(self):
+        return (73, 238, 246)
 
-        draw.rounded_rectangle((x0 - 7, y0 - 5, x1 + 7, y1 + 5), radius=23, fill=(4, 21, 36))
-        draw.rounded_rectangle((x0 - 4, y0 - 3, x1 + 4, y1 + 3), radius=21, fill=(18, 84, 105))
-        draw.rounded_rectangle(box, radius=18, fill=fill)
+    def _dim_cyan(self):
+        return (16, 92, 118)
 
-        inner = (x0 + 7, y0 + 8, x1 - 7, y1 - 8)
-        draw.rounded_rectangle(inner, radius=13, fill=shadow)
-        draw.rounded_rectangle((inner[0] + 4, inner[1] + 6, inner[2] - 4, inner[3] - 2), radius=10, fill=(10, 59, 77))
-        draw.rounded_rectangle((inner[0] + 4, inner[1] + 6, inner[2] - 4, inner[1] + 20), radius=9, fill=(99, 248, 244))
-        draw.rounded_rectangle((inner[0] + 6, inner[1] + 25, inner[2] - 6, inner[3] - 5), radius=8, fill=(33, 160, 185))
-        draw.arc((x0 + 4, y0 + 4, x1 - 4, y1 - 9), 190, 350, fill=(206, 255, 255), width=3)
+    def _pink(self):
+        return (255, 76, 143)
 
-        if sparkle:
-            draw.ellipse((x0 + 10, y0 + 11, x0 + 20, y0 + 22), fill=(245, 255, 255))
-            draw.ellipse((x1 - 17, y0 + 31, x1 - 10, y0 + 39), fill=(194, 255, 252))
-            draw.arc((x0 - 7, y0 - 8, x1 + 7, y1 + 8), 290, 340, fill=accent, width=3)
-            self._draw_star(draw, x1 + 11, y0 + 11, 4, (255, 147, 218))
-            draw.point((x0 - 6, y1 - 6), fill=bg)
+    def _line(self, draw, points, color=None, width=5):
+        draw.line(points, fill=color or self._cyan(), width=width, joint="curve")
 
-    def _draw_happy_eye(self, draw, box, color):
-        x0, y0, x1, y1 = box
-        draw.arc((x0 - 3, y0 + 14, x1 + 3, y1 + 22), 190, 350, fill=(23, 95, 119), width=13)
-        draw.arc((x0, y0 + 15, x1, y1 + 20), 190, 350, fill=color, width=8)
-        draw.arc((x0 + 7, y0 + 18, x1 - 7, y1 + 12), 205, 335, fill=(238, 255, 255), width=2)
+    def _glow_dot(self, draw, cx, cy, radius=14, color=None):
+        color = color or self._cyan()
+        eye_w = radius * 2 - 6
+        eye_h = radius * 2 + 10
+        x0 = cx - eye_w // 2
+        y0 = cy - eye_h // 2
+        x1 = cx + eye_w // 2
+        y1 = cy + eye_h // 2
+        glow = (x0 - 5, y0 - 5, x1 + 5, y1 + 5)
+        draw.rounded_rectangle(glow, radius=eye_w // 2 + 5, fill=self._dim_cyan())
+        draw.rounded_rectangle((x0, y0, x1, y1), radius=eye_w // 2, fill=color)
+        draw.rounded_rectangle((x0 + 8, y0 + 7, x0 + 15, y0 + 17), radius=4, fill=(225, 255, 255))
 
-    def _draw_sleepy_eye(self, draw, box, color):
-        x0, y0, x1, y1 = box
-        y = (y0 + y1) // 2
-        draw.arc((x0 - 1, y - 15, x1 + 1, y + 19), 10, 170, fill=(19, 82, 108), width=10)
-        draw.arc((x0, y - 14, x1, y + 17), 10, 170, fill=color, width=6)
-        draw.line((x1 + 9, y - 13, x1 + 20, y - 21), fill=(104, 244, 245), width=3)
+    def _flat_eye(self, draw, cx, cy, color=None):
+        color = color or self._cyan()
+        self._line(draw, (cx - 24, cy, cx + 24, cy), color=self._dim_cyan(), width=13)
+        self._line(draw, (cx - 21, cy, cx + 21, cy), color=color, width=9)
 
-    def _draw_sad_eye(self, draw, box, color):
-        x0, y0, x1, y1 = box
-        self._draw_eye_capsule(draw, (x0, y0 + 10, x1, y1), color, sparkle=False)
-        draw.line((x0 - 5, y0 + 9, x1 + 5, y0 + 25), fill=self._face_bg(), width=12)
-        draw.ellipse((x1 - 8, y1 + 4, x1 + 1, y1 + 17), fill=(104, 244, 245))
+    def _smile_eye(self, draw, cx, cy):
+        draw.arc((cx - 27, cy - 18, cx + 27, cy + 33), 20, 160, fill=self._dim_cyan(), width=13)
+        draw.arc((cx - 24, cy - 16, cx + 24, cy + 31), 20, 160, fill=self._cyan(), width=9)
 
-    def _draw_thinking_eye(self, draw, box, color, offset):
-        x0, y0, x1, y1 = box
-        box = (x0 + offset, y0, x1 + offset, y1)
-        self._draw_eye_capsule(draw, box, color)
-        draw.rounded_rectangle((x0 + 15 + offset, y0 + 28, x1 - 15 + offset, y1 - 17), radius=7, fill=(238, 255, 255))
+    def _sad_eye(self, draw, cx, cy):
+        draw.arc((cx - 27, cy - 9, cx + 27, cy + 34), 200, 340, fill=self._dim_cyan(), width=13)
+        draw.arc((cx - 24, cy - 7, cx + 24, cy + 32), 200, 340, fill=self._cyan(), width=9)
+
+    def _angry_eye(self, draw, cx, cy, direction):
+        del direction
+        color = self._pink()
+        dim = (103, 21, 62)
+        size = 16
+        self._line(draw, (cx - size, cy - size, cx + size, cy + size), color=dim, width=13)
+        self._line(draw, (cx - size, cy + size, cx + size, cy - size), color=dim, width=13)
+        self._line(draw, (cx - size + 2, cy - size + 2, cx + size - 2, cy + size - 2), color=color, width=8)
+        self._line(draw, (cx - size + 2, cy + size - 2, cx + size - 2, cy - size + 2), color=color, width=8)
+
+    def _heart(self, draw, cx, cy):
+        color = self._pink()
+        draw.ellipse((cx - 25, cy - 20, cx - 1, cy + 4), fill=color)
+        draw.ellipse((cx + 1, cy - 20, cx + 25, cy + 4), fill=color)
+        draw.polygon(((cx - 24, cy - 6), (cx + 24, cy - 6), (cx, cy + 30)), fill=color)
+
+    def _smile(self, draw, cx, cy, width=44):
+        draw.arc((cx - width // 2, cy - 18, cx + width // 2, cy + 22), 15, 165, fill=self._dim_cyan(), width=9)
+        draw.arc((cx - width // 2 + 2, cy - 17, cx + width // 2 - 2, cy + 20), 15, 165, fill=self._cyan(), width=5)
+
+    def _frown(self, draw, cx, cy, width=40, color=None, dim_color=None):
+        color = color or self._cyan()
+        dim_color = dim_color or self._dim_cyan()
+        draw.arc((cx - width // 2, cy + 2, cx + width // 2, cy + 34), 200, 340, fill=dim_color, width=8)
+        draw.arc((cx - width // 2 + 2, cy + 4, cx + width // 2 - 2, cy + 32), 200, 340, fill=color, width=5)
+
+    def _open_mouth(self, draw, cx, cy, radius=9):
+        draw.ellipse((cx - radius - 4, cy - radius - 4, cx + radius + 4, cy + radius + 4), fill=self._dim_cyan())
+        draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=self._cyan())
+        draw.ellipse((cx - radius + 5, cy - radius + 5, cx + radius - 5, cy + radius - 4), fill=self._face_bg())
 
     def _draw_eyes(self, draw, emotion, blink, t):
-        bob = int(math.sin(t * 2.0) * 2)
-        color = (104, 244, 245)
-        glow = (31, 114, 145)
-        left = (55, 74 + bob, 103, 151 + bob)
-        right = (137, 74 + bob, 185, 151 + bob)
+        emotion = EMOTION_ALIASES.get(emotion, emotion)
+        bob = self._bob(t)
+        ly = 107 + bob
+        ry = 107 + bob
+        lx = 80
+        rx = 160
 
-        if blink:
-            for x0, y0, x1, y1 in (left, right):
-                y = (y0 + y1) // 2
-                draw.line((x0 + 2, y, x1 - 2, y), fill=(23, 95, 119), width=11)
-                draw.line((x0 + 5, y, x1 - 5, y), fill=color, width=6)
+        if blink and emotion in ("happy", "neutral", "surprised"):
+            self._flat_eye(draw, lx, ly)
+            self._flat_eye(draw, rx, ry)
             return
 
         if emotion == "happy":
-            for box in (left, right):
-                self._draw_happy_eye(draw, box, color)
-            self._draw_star(draw, 120, 84 + bob, 3, (255, 147, 218))
-            return
-
-        if emotion == "sleepy":
-            for box in (left, right):
-                self._draw_sleepy_eye(draw, box, color)
-            return
-
-        if emotion == "sad":
-            self._draw_sad_eye(draw, (53, 86 + bob, 101, 154 + bob), color)
-            self._draw_sad_eye(draw, (139, 86 + bob, 187, 154 + bob), color)
-            return
-
-        if emotion == "curious":
-            self._draw_eye_capsule(draw, (54, 85 + bob, 99, 146 + bob), color)
-            self._draw_eye_capsule(draw, (132, 66 + bob, 188, 155 + bob), color)
-            return
-
-        if emotion == "thinking":
-            look = int(math.sin(t * 1.8) * 5)
-            self._draw_thinking_eye(draw, left, color, look)
-            self._draw_thinking_eye(draw, right, color, look)
-            return
-
-        if emotion == "excited":
-            pulse = int(20 * (0.5 + 0.5 * math.sin(t * 8.0)))
-            for box in (left, right):
-                x0, y0, x1, y1 = box
-                draw.rounded_rectangle((x0 - 8, y0 - 7, x1 + 8, y1 + 7), radius=25, fill=(12, 47, 70))
-                draw.rounded_rectangle((x0 - 4, y0 - 4, x1 + 4, y1 + 4), radius=22, fill=glow)
-                self._draw_eye_capsule(draw, box, (120 + pulse, 255, 250))
-                self._draw_star(draw, x0 - 8, y0 + 2, 4, (255, 147, 218))
-            return
-
-        for box in (left, right):
-            self._draw_eye_capsule(draw, box, color)
-
-    def _draw_mouth(self, draw, emotion, speaking, t):
-        mx = self.width // 2
-        my = 181 + int(math.sin(t * 2.0) * 2)
-        color = (104, 244, 245)
-
-        if speaking:
-            openness = 8 + int(18 * (0.5 + 0.5 * math.sin(t * 14.0)))
-            mouth_width = 24 + int(8 * (0.5 + 0.5 * math.sin(t * 9.0)))
-            draw.rounded_rectangle(
-                (mx - mouth_width, my - openness // 2, mx + mouth_width, my + openness),
-                radius=openness,
-                fill=(21, 91, 116),
-            )
-            draw.rounded_rectangle(
-                (mx - mouth_width + 6, my - openness // 2 + 5, mx + mouth_width - 6, my + openness - 5),
-                radius=max(4, openness // 2),
-                fill=color,
-            )
-            for i, height in enumerate((10, 17, 23, 15, 9)):
-                phase = 0.5 + 0.5 * math.sin(t * 12.0 + i * 0.8)
-                bar_h = int(4 + height * phase)
-                x = mx - 14 + i * 7
-                draw.line((x, my + openness // 2 - bar_h, x, my + openness // 2), fill=self._face_bg(), width=3)
-            return
-
-        if emotion in ("happy", "excited"):
-            draw.arc((mx - 34, my - 23, mx + 34, my + 25), 15, 165, fill=(21, 91, 116), width=11)
-            draw.arc((mx - 32, my - 22, mx + 32, my + 23), 15, 165, fill=color, width=6)
-            draw.ellipse((mx - 5, my + 12, mx + 5, my + 18), fill=(255, 147, 218))
+            self._glow_dot(draw, lx, ly)
+            self._glow_dot(draw, rx, ry)
+        elif emotion == "wink":
+            self._flat_eye(draw, lx, ly)
+            self._glow_dot(draw, rx, ry)
+        elif emotion == "worried":
+            self._sad_eye(draw, lx, ly - 3)
+            self._sad_eye(draw, rx, ry - 3)
+            self._line(draw, (lx - 18, ly - 28, lx - 2, ly - 35), width=4)
+            self._line(draw, (rx + 18, ry - 28, rx + 2, ry - 35), width=4)
+        elif emotion == "angry":
+            self._angry_eye(draw, lx, ly, 1)
+            self._angry_eye(draw, rx, ry, -1)
+        elif emotion == "neutral":
+            self._glow_dot(draw, lx, ly)
+            self._glow_dot(draw, rx, ry)
+        elif emotion == "love":
+            self._heart(draw, lx, ly)
+            self._heart(draw, rx, ry)
+        elif emotion == "surprised":
+            self._glow_dot(draw, lx, ly, radius=16)
+            self._glow_dot(draw, rx, ry, radius=16)
+        elif emotion == "bored":
+            self._flat_eye(draw, lx, ly - 2)
+            self._flat_eye(draw, rx, ry - 2)
+        elif emotion == "joy":
+            self._smile_eye(draw, lx, ly - 2)
+            self._smile_eye(draw, rx, ry - 2)
         elif emotion == "sad":
-            draw.arc((mx - 30, my + 4, mx + 30, my + 42), 195, 345, fill=(21, 91, 116), width=9)
-            draw.arc((mx - 28, my + 5, mx + 28, my + 40), 195, 345, fill=color, width=5)
-        elif emotion == "sleepy":
-            draw.line((mx - 21, my + 4, mx + 21, my + 4), fill=(21, 91, 116), width=9)
-            draw.line((mx - 18, my + 4, mx + 18, my + 4), fill=color, width=5)
-        elif emotion == "thinking":
-            draw.ellipse((mx - 10, my - 4, mx + 10, my + 16), outline=(21, 91, 116), width=7)
-            draw.ellipse((mx - 8, my - 2, mx + 8, my + 14), outline=color, width=4)
-        else:
-            draw.arc((mx - 24, my - 12, mx + 24, my + 16), 20, 160, fill=(21, 91, 116), width=8)
-            draw.arc((mx - 22, my - 12, mx + 22, my + 16), 20, 160, fill=color, width=5)
+            self._glow_dot(draw, lx, ly + 4, radius=14)
+            self._glow_dot(draw, rx, ry + 4, radius=14)
+            self._line(draw, (lx - 18, ly - 14, lx + 15, ly - 26), width=4)
+            self._line(draw, (rx - 15, ry - 26, rx + 18, ry - 14), width=4)
+
+    def _draw_mouth(self, draw, emotion, t):
+        emotion = EMOTION_ALIASES.get(emotion, emotion)
+        mx = self.width // 2
+        my = 160 + self._bob(t)
+
+        if emotion in ("happy", "wink", "love", "joy"):
+            self._smile(draw, mx, my)
+        elif emotion in ("worried", "sad"):
+            self._frown(draw, mx, my)
+        elif emotion == "angry":
+            self._frown(draw, mx, my, width=38, color=self._pink(), dim_color=(103, 21, 62))
+        elif emotion == "neutral":
+            return
+        elif emotion == "surprised":
+            self._open_mouth(draw, mx, my + 4)
+        elif emotion == "bored":
+            self._line(draw, (mx - 18, my, mx + 18, my), width=5)
+
+    def _draw_speech_mouth_overlay(self, img, t, speech_level=None):
+        x0, y0, x1, y1 = MOUTH_OVERLAY_RECT
+        img.paste(self.background.crop(MOUTH_OVERLAY_RECT), (x0, y0))
+        draw = ImageDraw.Draw(img)
+        mx = self.width // 2
+        my = 160 + self._bob(t)
+
+        if speech_level is not None:
+            speech_level = max(0.0, min(1.0, speech_level))
+
+        for i, height in enumerate((10, 18, 26, 18, 10)):
+            phase = 0.5 + 0.5 * math.sin(t * 13.0 + i * 0.9)
+            amount = phase if speech_level is None else phase * speech_level
+            bar_h = int(5 + height * amount)
+            x = mx - 20 + i * 10
+            self._line(draw, (x, my + bar_h // 2, x, my - bar_h // 2), width=5)
 
 
 def cycle_emotion(current):
-    idx = EMOTIONS.index(current)
-    return EMOTIONS[(idx + 1) % len(EMOTIONS)]
+    current = EMOTION_ALIASES.get(current, current)
+    idx = FACE_SEQUENCE.index(current)
+    return FACE_SEQUENCE[(idx + 1) % len(FACE_SEQUENCE)]
 
 
 def run_avatar(initial_emotion, fps, speaking, auto_cycle, emulated=False, emulator_scale=None):
     board = create_board(emulated=emulated, emulator_scale=emulator_scale)
     avatar = RobotAvatar(board.LCD_WIDTH, board.LCD_HEIGHT)
-    emotion = initial_emotion
+    emotion = EMOTION_ALIASES.get(initial_emotion, initial_emotion)
     running = True
+    emulated_speech_key = None
+    emulated_speech_level = None
     last_cycle = time.monotonic()
     frame_delay = 1.0 / max(1, fps)
     dirty_x0, dirty_y0, dirty_x1, dirty_y1 = AVATAR_DIRTY_RECT
@@ -272,15 +309,33 @@ def run_avatar(initial_emotion, fps, speaking, auto_cycle, emulated=False, emula
         last_cycle = time.monotonic()
         print(f"Emotion: {emotion}")
 
+    def set_emulated_speech_level(key, _key_code=None):
+        nonlocal emulated_speech_key, emulated_speech_level
+        if key in EMULATED_SPEECH_LEVELS:
+            emulated_speech_key = key
+            emulated_speech_level = EMULATED_SPEECH_LEVELS[key]
+            print(f"Speech level: {key} ({emulated_speech_level:.2f})")
+
+    def clear_emulated_speech_level(key, _key_code=None):
+        nonlocal emulated_speech_key, emulated_speech_level
+        if key == emulated_speech_key:
+            emulated_speech_key = None
+            emulated_speech_level = None
+
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     board.on_button_press(next_emotion)
+    if emulated and hasattr(board, "on_key_press") and hasattr(board, "on_key_release"):
+        board.on_key_press(set_emulated_speech_level)
+        board.on_key_release(clear_emulated_speech_level)
     board.set_rgb(0, 0, 0)
     board.set_backlight(100)
     rgb_to_rgb565be(avatar.background, background_buffer)
     board.draw_image(0, 0, board.LCD_WIDTH, board.LCD_HEIGHT, background_buffer)
 
     print("Animating robot avatar. Press the WhisPlay button to change emotion, Ctrl+C to exit.")
+    if emulated:
+        print("Emulator: hold 1-5 to preview speech mouth heights.")
 
     try:
         while running:
@@ -288,8 +343,13 @@ def run_avatar(initial_emotion, fps, speaking, auto_cycle, emulated=False, emula
             if auto_cycle and now - last_cycle > 5.0:
                 next_emotion()
 
-            voice_active = speaking or (emotion == "excited" and int(now * 2) % 2 == 0)
-            frame = avatar.draw_frame(emotion, speaking=voice_active, t=now)
+            voice_active = speaking or emulated_speech_level is not None
+            frame = avatar.draw_frame(
+                emotion,
+                speaking=voice_active,
+                t=now,
+                speech_level=emulated_speech_level,
+            )
             rgb_to_rgb565be(frame.crop(AVATAR_DIRTY_RECT), frame_buffer)
             board.draw_image(dirty_x0, dirty_y0, dirty_width, dirty_height, frame_buffer)
 
@@ -312,7 +372,7 @@ if __name__ == "__main__":
         default="happy",
         help="Starting emotion.",
     )
-    parser.add_argument("--fps", type=int, default=12, help="Target animation frame rate.")
+    parser.add_argument("--fps", type=int, default=18, help="Target animation frame rate.")
     parser.add_argument("--speaking", action="store_true", help="Keep the mouth talking.")
     parser.add_argument("--no-auto-cycle", action="store_true", help="Do not change emotions automatically.")
     parser.add_argument("--emulated", action="store_true", help="Use the software ST7789 emulator.")
