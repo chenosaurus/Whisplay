@@ -42,6 +42,8 @@ EMULATED_SPEECH_LEVELS = {
     "4": 0.75,
     "5": 1.0,
 }
+BOB_AMPLITUDE = 4.0
+BOB_SPEED = 1.05
 
 
 def create_board(emulated=False, emulator_scale=None):
@@ -122,7 +124,7 @@ class RobotAvatar:
         return (1, 4, 12)
 
     def _bob(self, t):
-        return int(round(math.sin(t * 1.6) * 6))
+        return math.sin(t * BOB_SPEED) * BOB_AMPLITUDE
 
     def _cyan(self):
         return (73, 238, 246)
@@ -372,7 +374,7 @@ if __name__ == "__main__":
         default="happy",
         help="Starting emotion.",
     )
-    parser.add_argument("--fps", type=int, default=18, help="Target animation frame rate.")
+    parser.add_argument("--fps", type=int, default=30, help="Target animation frame rate.")
     parser.add_argument("--speaking", action="store_true", help="Keep the mouth talking.")
     parser.add_argument("--no-auto-cycle", action="store_true", help="Do not change emotions automatically.")
     parser.add_argument("--emulated", action="store_true", help="Use the software ST7789 emulator.")
