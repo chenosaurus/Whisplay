@@ -1,0 +1,21 @@
+[package]
+name = "whisplay"
+version = "0.1.0"
+edition = "2021"
+description = "Native Rust LCD driver for the PiSugar WhisPlay HAT"
+license = "MIT"
+
+[dependencies]
+gpio-cdev = "0.6"
+spidev = "0.6"
+thiserror = "1"
+
+[dev-dependencies]
+
+[[example]]
+name = "play_mp4"
+path = "examples/play_mp4.rs"
+
+[[example]]
+name = "frame_bench"
+path = "examples/frame_bench.rs"
