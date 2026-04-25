@@ -22,7 +22,7 @@ except ImportError:
 
 
 EMOTIONS = ("happy", "curious", "excited", "sleepy", "thinking", "sad")
-AVATAR_DIRTY_RECT = (18, 10, 222, 240)
+AVATAR_DIRTY_RECT = (24, 48, 216, 218)
 
 
 def rgb_to_rgb565be(image, out=None):
@@ -48,159 +48,136 @@ def rgb_to_rgb565be(image, out=None):
     return out
 
 
-def rounded_rectangle(draw, box, radius, fill, outline=None, width=1):
-    draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
-
-
 class RobotAvatar:
     def __init__(self, width, height):
         self.width = width
         self.height = height
         self.blink_until = 0.0
         self.next_blink = time.monotonic() + random.uniform(1.5, 4.0)
-        self.sparkle_phase = random.random() * math.tau
-        self.background = self._make_background()
+        self.background = Image.new("RGB", (self.width, self.height), (2, 6, 14))
 
     def maybe_blink(self, now):
         if now >= self.next_blink:
-            self.blink_until = now + 0.11
-            self.next_blink = now + random.uniform(2.0, 5.5)
+            self.blink_until = now + 0.10
+            self.next_blink = now + random.uniform(2.0, 5.0)
         return now < self.blink_until
 
     def draw_frame(self, emotion, speaking=False, t=0.0):
         img = self.background.copy()
         draw = ImageDraw.Draw(img)
 
-        self._draw_head(draw, emotion, t)
-
         blink = self.maybe_blink(time.monotonic())
         self._draw_eyes(draw, emotion, blink, t)
-        self._draw_cheeks(draw, emotion, t)
         self._draw_mouth(draw, emotion, speaking, t)
-        self._draw_antenna(draw, emotion, t)
 
         return img
 
-    def _make_background(self):
-        img = Image.new("RGB", (self.width, self.height), (8, 13, 22))
-        draw = ImageDraw.Draw(img)
-        for y in range(self.height):
-            shade = int(10 + y / self.height * 22)
-            draw.line((0, y, self.width, y), fill=(5, shade, 35))
+    def _draw_eye_capsule(self, draw, box, fill, sparkle=True):
+        draw.rounded_rectangle(box, radius=18, fill=fill)
+        x0, y0, x1, y1 = box
+        if sparkle:
+            draw.ellipse((x0 + 9, y0 + 10, x0 + 19, y0 + 21), fill=(240, 255, 255))
+            draw.ellipse((x1 - 15, y0 + 28, x1 - 9, y0 + 35), fill=(185, 255, 252))
 
-        for i in range(9):
-            x = int((i * 47) % self.width)
-            y = int((i * 71) % self.height)
-            color = (18, 82, 110)
-            draw.ellipse((x - 1, y - 1, x + 1, y + 1), fill=color)
+    def _draw_happy_eye(self, draw, box, color):
+        x0, y0, x1, y1 = box
+        draw.arc((x0, y0 + 8, x1, y1 + 22), 190, 350, fill=color, width=8)
 
-        return img
+    def _draw_sleepy_eye(self, draw, box, color):
+        x0, y0, x1, y1 = box
+        y = (y0 + y1) // 2
+        draw.arc((x0, y - 12, x1, y + 20), 10, 170, fill=color, width=6)
 
-    def _draw_head(self, draw, emotion, t):
-        bob = int(math.sin(t * 2.0) * 2)
-        head = (33, 55 + bob, self.width - 33, 227 + bob)
-        shadow = (head[0] + 4, head[1] + 7, head[2] + 4, head[3] + 7)
-        rounded_rectangle(draw, shadow, 34, fill=(2, 5, 12))
-        rounded_rectangle(draw, head, 34, fill=(194, 226, 236), outline=(78, 135, 158), width=4)
+    def _draw_sad_eye(self, draw, box, color):
+        x0, y0, x1, y1 = box
+        draw.rounded_rectangle((x0, y0 + 12, x1, y1), radius=17, fill=color)
+        draw.line((x0 - 3, y0 + 7, x1 + 3, y0 + 20), fill=(2, 6, 14), width=9)
 
-        face = (49, 77 + bob, self.width - 49, 199 + bob)
-        rounded_rectangle(draw, face, 26, fill=(18, 37, 51), outline=(94, 188, 211), width=3)
-
-        if emotion == "thinking":
-            draw.arc((54, 82 + bob, 186, 214 + bob), 205, 305, fill=(99, 220, 216), width=2)
-
-    def _draw_antenna(self, draw, emotion, t):
-        bob = int(math.sin(t * 2.0) * 2)
-        cx = self.width // 2
-        top = 40 + bob
-        color = (255, 211, 88) if emotion in ("happy", "excited") else (98, 217, 236)
-        glow = int(30 + 25 * (0.5 + 0.5 * math.sin(t * 6.0)))
-
-        draw.line((cx, top + 18, cx, top - 8), fill=(93, 152, 171), width=4)
-        draw.ellipse((cx - 10, top - 20, cx + 10, top), fill=(color[0], color[1], color[2]))
-        draw.ellipse((cx - 15, top - 25, cx + 15, top + 5), outline=(color[0], color[1], glow), width=2)
+    def _draw_thinking_eye(self, draw, box, color, offset):
+        x0, y0, x1, y1 = box
+        box = (x0 + offset, y0, x1 + offset, y1)
+        self._draw_eye_capsule(draw, box, color)
 
     def _draw_eyes(self, draw, emotion, blink, t):
         bob = int(math.sin(t * 2.0) * 2)
-        left = (78, 119 + bob)
-        right = (162, 119 + bob)
-
-        if emotion == "sleepy":
-            blink = True
+        color = (104, 244, 245)
+        glow = (37, 120, 138)
+        left = (58, 78 + bob, 101, 148 + bob)
+        right = (139, 78 + bob, 182, 148 + bob)
 
         if blink:
-            draw.arc((left[0] - 23, left[1] - 7, left[0] + 23, left[1] + 20), 0, 180, fill=(111, 235, 239), width=5)
-            draw.arc((right[0] - 23, right[1] - 7, right[0] + 23, right[1] + 20), 0, 180, fill=(111, 235, 239), width=5)
+            for x0, y0, x1, y1 in (left, right):
+                y = (y0 + y1) // 2
+                draw.line((x0 + 2, y, x1 - 2, y), fill=color, width=7)
             return
 
-        eye_color = (111, 235, 239)
-        pupil_color = (4, 14, 22)
-        if emotion == "sad":
-            left = (76, 124 + bob)
-            right = (164, 124 + bob)
-        elif emotion == "curious":
-            left = (73, 118 + bob)
-            right = (166, 112 + bob)
+        if emotion == "happy":
+            for box in (left, right):
+                self._draw_happy_eye(draw, box, color)
+            return
 
-        for cx, cy in (left, right):
-            draw.ellipse((cx - 24, cy - 24, cx + 24, cy + 24), fill=eye_color)
-            draw.ellipse((cx - 10, cy - 10, cx + 10, cy + 10), fill=pupil_color)
-            draw.ellipse((cx - 6, cy - 8, cx - 1, cy - 3), fill=(236, 255, 255))
+        if emotion == "sleepy":
+            for box in (left, right):
+                self._draw_sleepy_eye(draw, box, color)
+            return
+
+        if emotion == "sad":
+            self._draw_sad_eye(draw, (55, 88 + bob, 99, 153 + bob), color)
+            self._draw_sad_eye(draw, (141, 88 + bob, 185, 153 + bob), color)
+            return
+
+        if emotion == "curious":
+            self._draw_eye_capsule(draw, (55, 83 + bob, 98, 145 + bob), color)
+            self._draw_eye_capsule(draw, (136, 70 + bob, 185, 151 + bob), color)
+            return
+
+        if emotion == "thinking":
+            look = int(math.sin(t * 1.8) * 5)
+            self._draw_thinking_eye(draw, left, color, look)
+            self._draw_thinking_eye(draw, right, color, look)
+            return
 
         if emotion == "excited":
-            for cx, cy in (left, right):
-                draw.polygon(
-                    ((cx, cy - 31), (cx + 7, cy - 8), (cx + 30, cy - 8),
-                     (cx + 11, cy + 6), (cx + 18, cy + 30), (cx, cy + 15),
-                     (cx - 18, cy + 30), (cx - 11, cy + 6), (cx - 30, cy - 8),
-                     (cx - 7, cy - 8)),
-                    outline=(255, 247, 130),
-                )
-
-        if emotion == "sad":
-            draw.line((56, 100 + bob, 96, 113 + bob), fill=(96, 182, 205), width=4)
-            draw.line((144, 113 + bob, 184, 100 + bob), fill=(96, 182, 205), width=4)
-
-    def _draw_cheeks(self, draw, emotion, t):
-        if emotion not in ("happy", "excited", "curious"):
+            pulse = int(20 * (0.5 + 0.5 * math.sin(t * 8.0)))
+            for box in (left, right):
+                x0, y0, x1, y1 = box
+                draw.rounded_rectangle((x0 - 4, y0 - 4, x1 + 4, y1 + 4), radius=22, fill=glow)
+                self._draw_eye_capsule(draw, box, (120 + pulse, 255, 250))
             return
 
-        bob = int(math.sin(t * 2.0) * 2)
-        glow = int(95 + 35 * (0.5 + 0.5 * math.sin(t * 3.0)))
-        color = (255, 113, 148) if emotion != "curious" else (255, 175, 112)
-        draw.ellipse((57, 153 + bob, 91, 171 + bob), fill=(glow, color[1] // 2, color[2] // 2))
-        draw.ellipse((149, 153 + bob, 183, 171 + bob), fill=(glow, color[1] // 2, color[2] // 2))
+        for box in (left, right):
+            self._draw_eye_capsule(draw, box, color)
 
     def _draw_mouth(self, draw, emotion, speaking, t):
-        bob = int(math.sin(t * 2.0) * 2)
         mx = self.width // 2
-        my = 169 + bob
+        my = 178 + int(math.sin(t * 2.0) * 2)
+        color = (104, 244, 245)
 
         if speaking:
-            openness = 10 + int(16 * (0.5 + 0.5 * math.sin(t * 14.0)))
-            width = 28 + int(8 * math.sin(t * 9.0 + 0.5))
+            openness = 8 + int(18 * (0.5 + 0.5 * math.sin(t * 14.0)))
+            mouth_width = 22 + int(8 * (0.5 + 0.5 * math.sin(t * 9.0)))
             draw.rounded_rectangle(
-                (mx - width, my - openness // 2, mx + width, my + openness),
+                (mx - mouth_width, my - openness // 2, mx + mouth_width, my + openness),
                 radius=openness,
-                fill=(99, 235, 220),
+                fill=color,
             )
             draw.rounded_rectangle(
-                (mx - width + 6, my - openness // 2 + 5, mx + width - 6, my + openness - 4),
-                radius=openness,
-                fill=(6, 18, 27),
+                (mx - mouth_width + 6, my - openness // 2 + 5, mx + mouth_width - 6, my + openness - 5),
+                radius=max(4, openness // 2),
+                fill=(2, 6, 14),
             )
             return
 
         if emotion in ("happy", "excited"):
-            draw.arc((mx - 38, my - 23, mx + 38, my + 27), 10, 170, fill=(99, 235, 220), width=6)
+            draw.arc((mx - 31, my - 21, mx + 31, my + 24), 15, 165, fill=color, width=6)
         elif emotion == "sad":
-            draw.arc((mx - 32, my + 3, mx + 32, my + 47), 190, 350, fill=(99, 235, 220), width=5)
+            draw.arc((mx - 28, my + 4, mx + 28, my + 42), 195, 345, fill=color, width=5)
         elif emotion == "sleepy":
-            draw.line((mx - 22, my + 7, mx + 22, my + 7), fill=(99, 235, 220), width=5)
+            draw.line((mx - 18, my + 4, mx + 18, my + 4), fill=color, width=5)
         elif emotion == "thinking":
-            draw.ellipse((mx - 8, my, mx + 8, my + 16), outline=(99, 235, 220), width=4)
+            draw.ellipse((mx - 7, my - 2, mx + 7, my + 12), outline=color, width=4)
         else:
-            draw.arc((mx - 25, my - 10, mx + 25, my + 18), 20, 160, fill=(99, 235, 220), width=5)
+            draw.arc((mx - 22, my - 12, mx + 22, my + 16), 20, 160, fill=color, width=5)
 
 
 def cycle_emotion(current):
