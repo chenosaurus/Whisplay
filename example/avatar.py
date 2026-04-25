@@ -236,7 +236,7 @@ def run_avatar(initial_emotion, fps, speaking, auto_cycle):
     signal.signal(signal.SIGTERM, stop)
     board.on_button_press(next_emotion)
     board.set_rgb(0, 0, 0)
-    board.set_backlight(80)
+    board.set_backlight(100)
     rgb_to_rgb565be(avatar.background, background_buffer)
     board.draw_image(0, 0, board.LCD_WIDTH, board.LCD_HEIGHT, background_buffer)
 
