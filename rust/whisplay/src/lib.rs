@@ -16,6 +16,7 @@ pub const FRAME_BYTES: usize = LCD_WIDTH as usize * LCD_HEIGHT as usize * 2;
 const DC_PIN: u8 = 13;
 const RST_PIN: u8 = 7;
 const LED_PIN: u8 = 15;
+const SPI_DATA_CHUNK_BYTES: usize = 4096;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -269,7 +270,9 @@ impl WhisplayBoard {
 
     fn send_data(&mut self, data: &[u8]) -> Result<()> {
         self.dc.set_value(1)?;
-        self.spi.write_all(data)?;
+        for chunk in data.chunks(SPI_DATA_CHUNK_BYTES) {
+            self.spi.write_all(chunk)?;
+        }
         Ok(())
     }
 }

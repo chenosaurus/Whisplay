@@ -33,3 +33,6 @@ the Python `example/play_mp4.py` video path.
 
 Both examples need access to `/dev/spidev*` and `/dev/gpiochip*`, so they may
 need to run as root depending on device permissions.
+
+Full-screen frames are split into 4096-byte SPI writes to work with the default
+Linux spidev transfer-size limit.

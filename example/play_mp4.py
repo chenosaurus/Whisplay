@@ -10,12 +10,6 @@ project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-try:
-    from Driver.WhisPlay import WhisPlayBoard
-except ImportError:
-    print("Error: Library 'Driver/WhisPlay.py' not found.")
-    sys.exit(1)
-
 def get_ffmpeg_cmd(video_path, width, height):
     model = "generic"
     try:
@@ -48,8 +42,24 @@ def get_ffmpeg_cmd(video_path, width, height):
         '-'
     ]
 
-def play_video(video_path):
-    board = WhisPlayBoard()
+
+def create_board(emulated=False, emulator_scale=None):
+    if emulated:
+        from Driver.EmulatedWhisPlay import EmulatedWhisPlayBoard
+
+        return EmulatedWhisPlayBoard(scale=emulator_scale)
+
+    try:
+        from Driver.WhisPlay import WhisPlayBoard
+    except ImportError:
+        print("Error: Library 'Driver/WhisPlay.py' not found.")
+        sys.exit(1)
+
+    return WhisPlayBoard()
+
+
+def play_video(video_path, emulated=False, emulator_scale=None):
+    board = create_board(emulated=emulated, emulator_scale=emulator_scale)
     board.set_backlight(100)
 
     width, height = board.LCD_WIDTH, board.LCD_HEIGHT
@@ -101,6 +111,8 @@ def play_video(video_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--file', '-f', default=os.path.join(project_root, 'example/data', 'whisplay_test.mp4'))
+    parser.add_argument("--emulated", action="store_true", help="Use the software ST7789 emulator.")
+    parser.add_argument("--emulator-scale", type=int, default=None, help="Scale factor for the emulator window.")
     args = parser.parse_args()
     VIDEO_FILE = args.file
 
@@ -110,7 +122,7 @@ if __name__ == "__main__":
 
     if os.path.exists(VIDEO_FILE):
         try:
-            play_video(VIDEO_FILE)
+            play_video(VIDEO_FILE, emulated=args.emulated, emulator_scale=args.emulator_scale)
         except Exception as e:
             print(f"Error: failed to play '{VIDEO_FILE}': {e}")
             sys.exit(1)
