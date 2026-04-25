@@ -24,10 +24,15 @@ except ImportError:
 EMOTIONS = ("happy", "curious", "excited", "sleepy", "thinking", "sad")
 
 
-def rgb_to_rgb565be(image):
+def rgb_to_rgb565be(image, out=None):
     """Convert a PIL RGB image to the display's big-endian RGB565 bytes."""
-    rgb = image.convert("RGB").tobytes()
-    out = bytearray((len(rgb) // 3) * 2)
+    rgb_image = image if image.mode == "RGB" else image.convert("RGB")
+    rgb = rgb_image.tobytes()
+    expected_len = (len(rgb) // 3) * 2
+    if out is None:
+        out = bytearray(expected_len)
+    elif len(out) != expected_len:
+        raise ValueError(f"Output buffer must be {expected_len} bytes")
 
     j = 0
     for i in range(0, len(rgb), 3):
@@ -53,6 +58,7 @@ class RobotAvatar:
         self.blink_until = 0.0
         self.next_blink = time.monotonic() + random.uniform(1.5, 4.0)
         self.sparkle_phase = random.random() * math.tau
+        self.background = self._make_background()
 
     def maybe_blink(self, now):
         if now >= self.next_blink:
@@ -61,10 +67,9 @@ class RobotAvatar:
         return now < self.blink_until
 
     def draw_frame(self, emotion, speaking=False, t=0.0):
-        img = Image.new("RGB", (self.width, self.height), (8, 13, 22))
+        img = self.background.copy()
         draw = ImageDraw.Draw(img)
 
-        self._draw_background(draw, t)
         self._draw_head(draw, emotion, t)
 
         blink = self.maybe_blink(time.monotonic())
@@ -75,17 +80,20 @@ class RobotAvatar:
 
         return img
 
-    def _draw_background(self, draw, t):
-        pulse = int(18 + 12 * (0.5 + 0.5 * math.sin(t * 0.9)))
+    def _make_background(self):
+        img = Image.new("RGB", (self.width, self.height), (8, 13, 22))
+        draw = ImageDraw.Draw(img)
         for y in range(self.height):
             shade = int(10 + y / self.height * 22)
-            draw.line((0, y, self.width, y), fill=(5, shade, 28 + pulse // 2))
+            draw.line((0, y, self.width, y), fill=(5, shade, 35))
 
         for i in range(9):
-            x = int((i * 47 + math.sin(t * 0.6 + i) * 8) % self.width)
-            y = int((i * 71 + math.cos(t * 0.5 + i) * 10) % self.height)
-            color = (18, 70 + pulse, 95 + pulse)
+            x = int((i * 47) % self.width)
+            y = int((i * 71) % self.height)
+            color = (18, 82, 110)
             draw.ellipse((x - 1, y - 1, x + 1, y + 1), fill=color)
+
+        return img
 
     def _draw_head(self, draw, emotion, t):
         bob = int(math.sin(t * 2.0) * 2)
@@ -206,6 +214,8 @@ def run_avatar(initial_emotion, fps, speaking, auto_cycle):
     running = True
     last_cycle = time.monotonic()
     frame_delay = 1.0 / max(1, fps)
+    frame_buffer = bytearray(board.LCD_WIDTH * board.LCD_HEIGHT * 2)
+    next_frame_at = time.monotonic()
 
     def stop(_signum=None, _frame=None):
         nonlocal running
@@ -220,6 +230,7 @@ def run_avatar(initial_emotion, fps, speaking, auto_cycle):
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     board.on_button_press(next_emotion)
+    board.set_rgb(0, 0, 0)
     board.set_backlight(80)
 
     print("Animating robot avatar. Press the WhisPlay button to change emotion, Ctrl+C to exit.")
@@ -232,8 +243,15 @@ def run_avatar(initial_emotion, fps, speaking, auto_cycle):
 
             voice_active = speaking or (emotion == "excited" and int(now * 2) % 2 == 0)
             frame = avatar.draw_frame(emotion, speaking=voice_active, t=now)
-            board.draw_image(0, 0, board.LCD_WIDTH, board.LCD_HEIGHT, rgb_to_rgb565be(frame))
-            time.sleep(frame_delay)
+            rgb_to_rgb565be(frame, frame_buffer)
+            board.draw_image(0, 0, board.LCD_WIDTH, board.LCD_HEIGHT, frame_buffer)
+
+            next_frame_at += frame_delay
+            sleep_for = next_frame_at - time.monotonic()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            else:
+                next_frame_at = time.monotonic()
     finally:
         board.set_backlight(0)
         board.cleanup()

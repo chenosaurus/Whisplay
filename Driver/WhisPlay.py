@@ -322,9 +322,13 @@ class WhisPlayBoard:
         self.red_pwm = SoftPWM(red_line.set_value, 100, stop_value=1)
         self.green_pwm = SoftPWM(green_line.set_value, 100, stop_value=1)
         self.blue_pwm = SoftPWM(blue_line.set_value, 100, stop_value=1)
-        self.red_pwm.start(0)
-        self.green_pwm.start(0)
-        self.blue_pwm.start(0)
+        # RGB channels are active-low; 100% duty holds the LED off.
+        red_line.set_value(1)
+        green_line.set_value(1)
+        blue_line.set_value(1)
+        self.red_pwm.start(100)
+        self.green_pwm.start(100)
+        self.blue_pwm.start(100)
 
         # Initialize button (input, polled for state changes)
         # The WhisPlay HAT has an external pull-down resistor on the button line.
