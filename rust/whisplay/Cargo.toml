@@ -7,13 +7,17 @@ license = "MIT"
 
 [dependencies]
 gpio-cdev = "0.6"
+minifb = { version = "0.28.0", optional = true }
 spidev = "0.6"
 thiserror = "1"
+
+[features]
+default = []
+emulator = ["dep:minifb"]
 
 [dev-dependencies]
 ctrlc = { version = "3.5.2", features = ["termination"] }
 embedded-graphics = "0.8.2"
-minifb = "0.28.0"
 rand = "0.10.1"
 
 [[example]]

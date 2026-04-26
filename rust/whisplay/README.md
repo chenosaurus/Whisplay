@@ -40,12 +40,13 @@ LCD updates, and cycles emotions from the WhisPlay button or every five seconds.
 Add `--speaking` to keep the mouth in its speech animation.
 
 ```bash
-cargo run --example avatar -- --emulated --emulator-scale 2
+cargo run --features emulator --example avatar -- --emulated --emulator-scale 2
 ```
 
 This opens a `minifb` emulator window instead of using the hardware display.
 Press Space to cycle emotions, Esc to exit, and hold 1-5 to preview speech
-mouth levels.
+mouth levels. The `emulator` feature is intentionally opt-in so device builds
+do not compile the desktop windowing dependencies.
 
 These examples need access to `/dev/spidev*` and `/dev/gpiochip*`, so they may
 need to run as root depending on device permissions.

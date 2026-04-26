@@ -9,6 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use embedded_graphics::pixelcolor::{IntoStorage, Rgb565};
+#[cfg(feature = "emulator")]
 use minifb::{Key, Window, WindowOptions};
 use whisplay::{WhisplayBoard, LCD_HEIGHT, LCD_WIDTH};
 
@@ -57,7 +58,7 @@ fn main() -> AppResult<()> {
 
 fn run_avatar(options: Options, running: Arc<AtomicBool>) -> AppResult<()> {
     let mut display: Box<dyn AvatarDisplay> = if options.emulated {
-        Box::new(EmulatedDisplay::new(options.emulator_scale)?)
+        create_emulated_display(options.emulator_scale)?
     } else {
         Box::new(DisplayResetGuard::new(WhisplayBoard::new()?))
     };
@@ -901,6 +902,17 @@ trait AvatarDisplay {
     }
 }
 
+#[cfg(feature = "emulator")]
+fn create_emulated_display(scale: usize) -> AppResult<Box<dyn AvatarDisplay>> {
+    Ok(Box::new(EmulatedDisplay::new(scale)?))
+}
+
+#[cfg(not(feature = "emulator"))]
+fn create_emulated_display(_scale: usize) -> AppResult<Box<dyn AvatarDisplay>> {
+    Err("the --emulated option requires building with --features emulator".into())
+}
+
+#[cfg(feature = "emulator")]
 struct EmulatedDisplay {
     window: Window,
     scale: usize,
@@ -909,6 +921,7 @@ struct EmulatedDisplay {
     backlight_enabled: bool,
 }
 
+#[cfg(feature = "emulator")]
 impl EmulatedDisplay {
     fn new(scale: usize) -> AppResult<Self> {
         let scale = scale.max(1);
@@ -971,6 +984,7 @@ impl EmulatedDisplay {
     }
 }
 
+#[cfg(feature = "emulator")]
 impl AvatarDisplay for EmulatedDisplay {
     fn draw_frame(&mut self, pixel_data: &[u8]) -> AppResult<()> {
         if pixel_data.len() != self.framebuffer.len() {
@@ -1060,6 +1074,7 @@ impl AvatarDisplay for EmulatedDisplay {
     }
 }
 
+#[cfg(feature = "emulator")]
 fn rgb565_to_u32(color: u16, shade: u16) -> u32 {
     let r = (((color >> 11) & 0x1F) * 255 / 31) * shade / 255;
     let g = (((color >> 5) & 0x3F) * 255 / 63) * shade / 255;
