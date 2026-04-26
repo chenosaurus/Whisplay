@@ -97,6 +97,8 @@ mod avatar {
     }
 }
 
+mod db_meter;
+
 use std::collections::VecDeque;
 use std::env;
 use std::sync::{
@@ -104,6 +106,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -111,6 +114,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
     Device, FromSample, Sample, SampleFormat, SampleRate, SizedSample, Stream, StreamConfig,
 };
+use db_meter::{calculate_db_level, display_dual_db_meters};
 use futures_util::StreamExt;
 use libwebrtc::native::apm::AudioProcessingModule;
 use livekit::{
@@ -307,6 +311,7 @@ impl AudioCapture {
         config: StreamConfig,
         sample_format: SampleFormat,
         audio_tx: mpsc::UnboundedSender<Vec<i16>>,
+        db_tx: Option<mpsc::UnboundedSender<f32>>,
         channel_index: u32,
         num_input_channels: u32,
     ) -> Result<Self> {
@@ -316,6 +321,7 @@ impl AudioCapture {
                 device,
                 config,
                 audio_tx,
+                db_tx,
                 Arc::clone(&is_running),
                 channel_index,
                 num_input_channels,
@@ -324,6 +330,7 @@ impl AudioCapture {
                 device,
                 config,
                 audio_tx,
+                db_tx,
                 Arc::clone(&is_running),
                 channel_index,
                 num_input_channels,
@@ -332,6 +339,7 @@ impl AudioCapture {
                 device,
                 config,
                 audio_tx,
+                db_tx,
                 Arc::clone(&is_running),
                 channel_index,
                 num_input_channels,
@@ -355,6 +363,7 @@ impl AudioCapture {
         device: Device,
         config: StreamConfig,
         audio_tx: mpsc::UnboundedSender<Vec<i16>>,
+        db_tx: Option<mpsc::UnboundedSender<f32>>,
         is_running: Arc<AtomicBool>,
         channel_index: u32,
         num_input_channels: u32,
@@ -362,6 +371,7 @@ impl AudioCapture {
     where
         T: SizedSample + Send + 'static,
     {
+        let mut logged_first_buffer = false;
         let stream = device.build_input_stream(
             &config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
@@ -369,15 +379,33 @@ impl AudioCapture {
                     return;
                 }
 
-                let converted = data
+                let converted: Vec<i16> = data
                     .iter()
                     .skip(channel_index as usize)
                     .step_by(num_input_channels as usize)
                     .map(|&sample| convert_sample_to_i16(sample))
                     .collect();
 
-                if audio_tx.send(converted).is_err() {
-                    warn!("Audio capture receiver closed");
+                if let Some(ref db_sender) = db_tx {
+                    let db_level = calculate_db_level(&converted);
+                    if !logged_first_buffer {
+                        info!(
+                            "Mic capture callback active: {} raw samples, {} selected-channel samples, channel={}, input_channels={}, first_db={:.1}",
+                            data.len(),
+                            converted.len(),
+                            channel_index,
+                            num_input_channels,
+                            db_level
+                        );
+                        logged_first_buffer = true;
+                    }
+                    if let Err(error) = db_sender.send(db_level) {
+                        warn!("Failed to send mic dB level: {error}");
+                    }
+                }
+
+                if let Err(error) = audio_tx.send(converted) {
+                    warn!("Failed to send audio data: {error}");
                 }
             },
             move |error| {
@@ -479,15 +507,17 @@ struct AudioMixer {
     buffer: Arc<Mutex<VecDeque<i16>>>,
     volume: f32,
     max_buffer_size: usize,
-    reference_audio_tx: mpsc::UnboundedSender<Vec<i16>>,
+    db_tx: Option<mpsc::UnboundedSender<f32>>,
+    reference_audio_tx: Option<mpsc::UnboundedSender<Vec<i16>>>,
     speech_level: Arc<AtomicU32>,
 }
 
 impl AudioMixer {
-    fn new(
+    fn with_reference_audio(
         sample_rate: u32,
         channels: u32,
         volume: f32,
+        db_tx: mpsc::UnboundedSender<f32>,
         reference_audio_tx: mpsc::UnboundedSender<Vec<i16>>,
         speech_level: Arc<AtomicU32>,
     ) -> Self {
@@ -496,7 +526,8 @@ impl AudioMixer {
             buffer: Arc::new(Mutex::new(VecDeque::with_capacity(max_buffer_size))),
             volume: volume.clamp(0.0, 1.0),
             max_buffer_size,
-            reference_audio_tx,
+            db_tx: Some(db_tx),
+            reference_audio_tx: Some(reference_audio_tx),
             speech_level,
         }
     }
@@ -522,17 +553,23 @@ impl AudioMixer {
         self.speech_level
             .store(calculate_speech_level(&result).to_bits(), Ordering::Relaxed);
 
-        if self.reference_audio_tx.send(result.clone()).is_err() {
-            debug!("Reference audio channel closed");
+        if let Some(db_tx) = &self.db_tx {
+            let db_level = calculate_db_level(&result);
+            let _ = db_tx.send(db_level);
+        }
+
+        if let Some(reference_audio_tx) = &self.reference_audio_tx {
+            if reference_audio_tx.send(result.clone()).is_err() {
+                debug!("Reference audio channel closed");
+            }
         }
 
         result
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    env_logger::init();
+fn main() -> Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
     if args.list_devices {
@@ -543,8 +580,12 @@ async fn main() -> Result<()> {
     }
 
     let running = Arc::new(AtomicBool::new(true));
+    let running_for_signal = Arc::clone(&running);
+    ctrlc::set_handler(move || {
+        running_for_signal.store(false, Ordering::SeqCst);
+    })?;
+
     let speech_level = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
-    let (avatar_done_tx, mut avatar_done_rx) = mpsc::unbounded_channel();
     let avatar_options = avatar::ClientAvatarOptions {
         fps: args.fps,
         speaking: args.speaking,
@@ -553,42 +594,59 @@ async fn main() -> Result<()> {
         emulator_scale: args.emulator_scale,
     };
 
-    {
-        let running = Arc::clone(&running);
-        let speech_level = Arc::clone(&speech_level);
-        thread::spawn(move || {
-            let result = avatar::run_client_avatar(avatar_options, running, speech_level)
-                .map_err(|error| error.to_string());
-            let _ = avatar_done_tx.send(result);
-        });
-    }
+    let audio_running = Arc::clone(&running);
+    let audio_speech_level = Arc::clone(&speech_level);
+    let audio_thread =
+        thread::spawn(move || run_audio_thread(args, audio_speech_level, audio_running));
 
-    let audio_runtime = start_audio_client(&args, Arc::clone(&speech_level)).await?;
-    info!("Avatar client connected. Press Ctrl+C to stop.");
-
-    tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            signal?;
-            info!("Ctrl+C received, shutting down");
-        }
-        avatar_result = avatar_done_rx.recv() => {
-            match avatar_result {
-                Some(Ok(())) => info!("Avatar display loop exited"),
-                Some(Err(error)) => return Err(anyhow!("avatar display failed: {error}")),
-                None => return Err(anyhow!("avatar display thread ended unexpectedly")),
-            }
-        }
-    }
-
+    let avatar_result =
+        avatar::run_client_avatar(avatar_options, Arc::clone(&running), speech_level)
+            .map_err(|error| anyhow!("avatar display failed: {error}"));
     running.store(false, Ordering::SeqCst);
-    audio_runtime.shutdown().await;
+
+    let audio_result = audio_thread
+        .join()
+        .map_err(|_| anyhow!("audio client thread panicked"))?;
+
+    avatar_result?;
+    audio_result.map_err(|error| anyhow!("audio client failed: {error}"))?;
     Ok(())
+}
+
+fn run_audio_thread(
+    args: Args,
+    speech_level: Arc<AtomicU32>,
+    running: Arc<AtomicBool>,
+) -> std::result::Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let running_for_error = Arc::clone(&running);
+
+    runtime
+        .block_on(async move {
+            let audio_runtime = start_audio_client(&args, speech_level).await?;
+            info!("Avatar client connected. Press Ctrl+C to stop.");
+
+            while running.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+
+            audio_runtime.shutdown().await;
+            Ok(())
+        })
+        .map_err(|error: anyhow::Error| {
+            running_for_error.store(false, Ordering::SeqCst);
+            error.to_string()
+        })
 }
 
 struct AudioRuntime {
     room: Arc<Room>,
     streaming_task: tokio::task::JoinHandle<Result<()>>,
     reference_task: tokio::task::JoinHandle<Result<()>>,
+    db_meter_task: tokio::task::JoinHandle<Result<()>>,
     remote_audio_task: Option<tokio::task::JoinHandle<Result<()>>>,
     _audio_capture: AudioCapture,
     _audio_playback: Option<AudioPlayback>,
@@ -598,6 +656,7 @@ impl AudioRuntime {
     async fn shutdown(self) {
         self.streaming_task.abort();
         self.reference_task.abort();
+        self.db_meter_task.abort();
         if let Some(task) = self.remote_audio_task {
             task.abort();
         }
@@ -626,11 +685,12 @@ async fn start_audio_client(args: &Args, speech_level: Arc<AtomicU32>) -> Result
     info!("Connected to room: {}", room.name());
 
     let host = cpal::default_host();
+    print_audio_device_inventory(&host);
+
     let input_device = select_input_device(&host, args.input_device.as_deref())?;
     let input_name = input_device
         .name()
         .unwrap_or_else(|_| "Unknown input".to_string());
-    info!("Using audio input device: {input_name}");
 
     let input_supported_config = input_device.default_input_config()?;
     let supported_channels = input_supported_config.channels() as u32;
@@ -646,6 +706,16 @@ async fn start_audio_client(args: &Args, speech_level: Arc<AtomicU32>) -> Result
         sample_rate: SampleRate(args.sample_rate),
         buffer_size: cpal::BufferSize::Default,
     };
+    println!(
+        "Selected audio input: name='{input_name}', default={}Hz/{}ch/{:?}, stream={}Hz/{}ch/{:?}, capture_channel={}",
+        input_supported_config.sample_rate().0,
+        input_supported_config.channels(),
+        input_supported_config.sample_format(),
+        input_config.sample_rate.0,
+        input_config.channels,
+        input_supported_config.sample_format(),
+        args.channel
+    );
 
     let output_device = if args.no_playback {
         None
@@ -697,11 +767,16 @@ async fn start_audio_client(args: &Args, speech_level: Arc<AtomicU32>) -> Result
 
     let (audio_tx, audio_rx) = mpsc::unbounded_channel();
     let (reference_audio_tx, reference_audio_rx) = mpsc::unbounded_channel();
+    let (mic_db_tx, mic_db_rx) = mpsc::unbounded_channel();
+    let (room_db_tx, room_db_rx) = mpsc::unbounded_channel();
+    let db_meter_task = tokio::spawn(display_dual_db_meters(mic_db_rx, room_db_rx));
+
     let audio_capture = AudioCapture::new(
         input_device,
         input_config,
         input_supported_config.sample_format(),
         audio_tx,
+        Some(mic_db_tx),
         args.channel,
         supported_channels,
     )?;
@@ -718,41 +793,53 @@ async fn start_audio_client(args: &Args, speech_level: Arc<AtomicU32>) -> Result
         args.sample_rate,
     ));
 
-    let (audio_playback, remote_audio_task) =
-        if let (Some(output_device), Some(output_config)) = (output_device, output_config) {
-            let output_name = output_device
-                .name()
-                .unwrap_or_else(|_| "Unknown output".to_string());
-            info!("Using audio output device: {output_name}");
-            let output_supported_config = output_device.default_output_config()?;
-            let mixer = AudioMixer::new(
-                args.sample_rate,
-                DEFAULT_CHANNELS as u32,
-                args.volume,
-                reference_audio_tx,
-                speech_level,
-            );
-            let remote_audio_task = tokio::spawn(handle_remote_audio_streams(
-                Arc::clone(&room),
-                mixer.clone(),
-                args.sample_rate,
-            ));
-            let playback = AudioPlayback::new(
-                output_device,
-                output_config,
+    let (audio_playback, remote_audio_task) = if let (Some(output_device), Some(output_config)) =
+        (output_device, output_config)
+    {
+        let output_name = output_device
+            .name()
+            .unwrap_or_else(|_| "Unknown output".to_string());
+        let output_supported_config = output_device.default_output_config()?;
+        println!(
+                "Selected audio output: name='{output_name}', default={}Hz/{}ch/{:?}, stream={}Hz/{}ch/{:?}, volume={:.2}",
+                output_supported_config.sample_rate().0,
+                output_supported_config.channels(),
                 output_supported_config.sample_format(),
-                mixer,
-            )?;
-            (Some(playback), Some(remote_audio_task))
-        } else {
-            warn!("Audio playback disabled; AEC will not receive speaker reference audio");
-            (None, None)
-        };
+                output_config.sample_rate.0,
+                output_config.channels,
+                output_supported_config.sample_format(),
+                args.volume
+            );
+        let mixer = AudioMixer::with_reference_audio(
+            args.sample_rate,
+            DEFAULT_CHANNELS as u32,
+            args.volume,
+            room_db_tx,
+            reference_audio_tx,
+            speech_level,
+        );
+        let remote_audio_task = tokio::spawn(handle_remote_audio_streams(
+            Arc::clone(&room),
+            mixer.clone(),
+            args.sample_rate,
+        ));
+        let playback = AudioPlayback::new(
+            output_device,
+            output_config,
+            output_supported_config.sample_format(),
+            mixer,
+        )?;
+        (Some(playback), Some(remote_audio_task))
+    } else {
+        warn!("Audio playback disabled; AEC will not receive speaker reference audio");
+        (None, None)
+    };
 
     Ok(AudioRuntime {
         room,
         streaming_task,
         reference_task,
+        db_meter_task,
         remote_audio_task,
         _audio_capture: audio_capture,
         _audio_playback: audio_playback,
@@ -807,12 +894,24 @@ async fn stream_audio_to_livekit(
 ) -> Result<()> {
     let mut buffer = Vec::new();
     let samples_per_10ms = (sample_rate / 100) as usize;
+    let mut frame_count = 0_u64;
+    let mut last_meter_at = Instant::now();
     info!("Starting LiveKit microphone stream: {sample_rate} Hz, mono");
 
     while let Some(audio_data) = audio_rx.recv().await {
         buffer.extend_from_slice(&audio_data);
         while buffer.len() >= samples_per_10ms {
             let mut chunk: Vec<i16> = buffer.drain(..samples_per_10ms).collect();
+            frame_count += 1;
+            if last_meter_at.elapsed() >= Duration::from_millis(500) {
+                let level = calculate_speech_level(&chunk);
+                info!(
+                    "Mic VU frame #{frame_count}: [{}] {:.3}",
+                    level_bar(level),
+                    level
+                );
+                last_meter_at = Instant::now();
+            }
             {
                 let mut processor = echo_processor.lock().await;
                 processor.process_microphone_audio(&mut chunk);
@@ -887,8 +986,22 @@ async fn handle_remote_audio_streams(
                     let mixer = mixer.clone();
 
                     tokio::spawn(async move {
+                        let mut frame_count = 0_u64;
                         while let Some(audio_frame) = audio_stream.next().await {
                             mixer.add_audio_data(audio_frame.data.as_ref());
+                            frame_count += 1;
+                            if frame_count == 1 || frame_count % 100 == 0 {
+                                let level = calculate_speech_level(audio_frame.data.as_ref());
+                                info!(
+                                    "Remote audio from {}: frame #{}, {} samples, {}Hz, {}ch, level={:.3}",
+                                    participant_identity,
+                                    frame_count,
+                                    audio_frame.data.len(),
+                                    audio_frame.sample_rate,
+                                    audio_frame.num_channels,
+                                    level
+                                );
+                            }
                             debug!(
                                 "Received {} samples from {}",
                                 audio_frame.data.len(),
@@ -920,56 +1033,93 @@ async fn handle_remote_audio_streams(
 
 fn list_audio_devices() -> Result<()> {
     let host = cpal::default_host();
+    print_audio_device_inventory(&host);
+    Ok(())
+}
 
+fn print_audio_device_inventory(host: &cpal::Host) {
     println!("Available audio input devices:");
-    for (index, device) in host.input_devices()?.enumerate() {
-        let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-        println!("{}. {}", index + 1, name);
-        if let Ok(config) = device.default_input_config() {
-            println!(
-                "   sample_rate={}Hz channels={} format={:?}",
-                config.sample_rate().0,
-                config.channels(),
-                config.sample_format()
-            );
+    match host.input_devices() {
+        Ok(devices) => {
+            for (index, device) in devices.enumerate() {
+                print_device_default_config(index, "input", &device);
+            }
         }
+        Err(error) => println!("   failed to enumerate input devices: {error}"),
     }
 
     println!("\nAvailable audio output devices:");
-    for (index, device) in host.output_devices()?.enumerate() {
-        let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-        println!("{}. {}", index + 1, name);
-        if let Ok(config) = device.default_output_config() {
+    match host.output_devices() {
+        Ok(devices) => {
+            for (index, device) in devices.enumerate() {
+                print_device_default_config(index, "output", &device);
+            }
+        }
+        Err(error) => println!("   failed to enumerate output devices: {error}"),
+    }
+    println!();
+}
+
+fn print_device_default_config(index: usize, direction: &str, device: &Device) {
+    let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+    println!("{}. {}", index + 1, name);
+
+    let config = match direction {
+        "input" => device.default_input_config(),
+        "output" => device.default_output_config(),
+        _ => return,
+    };
+
+    match config {
+        Ok(config) => {
             println!(
-                "   sample_rate={}Hz channels={} format={:?}",
+                "   default {} config: {}Hz {}ch {:?}",
+                direction,
                 config.sample_rate().0,
                 config.channels(),
                 config.sample_format()
             );
         }
+        Err(error) => println!("   no default {direction} config: {error}"),
     }
-
-    Ok(())
 }
 
 fn select_input_device(host: &cpal::Host, requested: Option<&str>) -> Result<Device> {
     if let Some(name) = requested {
+        println!("Selecting requested audio input device containing '{name}'");
         return find_input_device_by_name(host, name);
     }
-    find_input_device_by_name(host, DEFAULT_WM8960_NAME).or_else(|_| {
-        host.default_input_device()
-            .ok_or_else(|| anyhow!("no input device found"))
-    })
+
+    match find_input_device_by_name(host, DEFAULT_WM8960_NAME) {
+        Ok(device) => {
+            println!("Auto-selected WM8960 audio input device");
+            Ok(device)
+        }
+        Err(error) => {
+            println!("WM8960 audio input not found ({error}); using system default input");
+            host.default_input_device()
+                .ok_or_else(|| anyhow!("no input device found"))
+        }
+    }
 }
 
 fn select_output_device(host: &cpal::Host, requested: Option<&str>) -> Result<Device> {
     if let Some(name) = requested {
+        println!("Selecting requested audio output device containing '{name}'");
         return find_output_device_by_name(host, name);
     }
-    find_output_device_by_name(host, DEFAULT_WM8960_NAME).or_else(|_| {
-        host.default_output_device()
-            .ok_or_else(|| anyhow!("no output device found"))
-    })
+
+    match find_output_device_by_name(host, DEFAULT_WM8960_NAME) {
+        Ok(device) => {
+            println!("Auto-selected WM8960 audio output device");
+            Ok(device)
+        }
+        Err(error) => {
+            println!("WM8960 audio output not found ({error}); using system default output");
+            host.default_output_device()
+                .ok_or_else(|| anyhow!("no output device found"))
+        }
+    }
 }
 
 fn find_input_device_by_name(host: &cpal::Host, name: &str) -> Result<Device> {
@@ -1009,6 +1159,16 @@ fn calculate_speech_level(samples: &[i16]) -> f32 {
         .sum::<f32>()
         / samples.len() as f32;
     (average / i16::MAX as f32 * 4.0).clamp(0.0, 1.0)
+}
+
+fn level_bar(level: f32) -> String {
+    const WIDTH: usize = 24;
+    let filled = (level.clamp(0.0, 1.0) * WIDTH as f32).round() as usize;
+    let mut bar = String::with_capacity(WIDTH);
+    for index in 0..WIDTH {
+        bar.push(if index < filled { '#' } else { '-' });
+    }
+    bar
 }
 
 fn convert_sample_to_i16<T: SizedSample>(sample: T) -> i16 {
