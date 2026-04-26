@@ -31,7 +31,23 @@ cargo run --release --example play_mp4 -- ../../example/data/whisplay_test.mp4
 This streams raw `rgb565be` frames from `ffmpeg` directly to the LCD, matching
 the Python `example/play_mp4.py` video path.
 
-Both examples need access to `/dev/spidev*` and `/dev/gpiochip*`, so they may
+```bash
+cargo run --release --example avatar -- --emotion happy --fps 30
+```
+
+This animates the robot avatar from `example/avatar.py`, uses dirty-rectangle
+LCD updates, and cycles emotions from the WhisPlay button or every five seconds.
+Add `--speaking` to keep the mouth in its speech animation.
+
+```bash
+cargo run --example avatar -- --emulated --emulator-scale 2
+```
+
+This opens a `minifb` emulator window instead of using the hardware display.
+Press Space to cycle emotions, Esc to exit, and hold 1-5 to preview speech
+mouth levels.
+
+These examples need access to `/dev/spidev*` and `/dev/gpiochip*`, so they may
 need to run as root depending on device permissions.
 
 Full-screen frames are split into 4096-byte SPI writes to work with the default

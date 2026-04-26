@@ -12,6 +12,9 @@ thiserror = "1"
 
 [dev-dependencies]
 ctrlc = { version = "3.5.2", features = ["termination"] }
+embedded-graphics = "0.8.2"
+minifb = "0.28.0"
+rand = "0.10.1"
 
 [[example]]
 name = "play_mp4"
@@ -20,3 +23,7 @@ path = "examples/play_mp4.rs"
 [[example]]
 name = "frame_bench"
 path = "examples/frame_bench.rs"
+
+[[example]]
+name = "avatar"
+path = "examples/avatar.rs"

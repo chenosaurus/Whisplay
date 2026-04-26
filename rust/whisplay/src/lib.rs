@@ -16,6 +16,10 @@ pub const FRAME_BYTES: usize = LCD_WIDTH as usize * LCD_HEIGHT as usize * 2;
 const DC_PIN: u8 = 13;
 const RST_PIN: u8 = 7;
 const LED_PIN: u8 = 15;
+const RED_PIN: u8 = 22;
+const GREEN_PIN: u8 = 18;
+const BLUE_PIN: u8 = 16;
+const BUTTON_PIN: u8 = 11;
 const SPI_DATA_CHUNK_BYTES: usize = 4096;
 
 #[derive(Debug, Error)]
@@ -128,6 +132,10 @@ pub struct WhisplayBoard {
     dc: LineHandle,
     rst: LineHandle,
     backlight: LineHandle,
+    red: LineHandle,
+    green: LineHandle,
+    blue: LineHandle,
+    button: LineHandle,
 }
 
 impl WhisplayBoard {
@@ -139,6 +147,10 @@ impl WhisplayBoard {
         let dc = request_output(&config, DC_PIN, 0)?;
         let rst = request_output(&config, RST_PIN, 0)?;
         let backlight = request_output(&config, LED_PIN, 0)?;
+        let red = request_output(&config, RED_PIN, 1)?;
+        let green = request_output(&config, GREEN_PIN, 1)?;
+        let blue = request_output(&config, BLUE_PIN, 1)?;
+        let button = request_input(&config, BUTTON_PIN)?;
         let spi = open_spi(&config)?;
 
         let mut board = Self {
@@ -147,6 +159,10 @@ impl WhisplayBoard {
             dc,
             rst,
             backlight,
+            red,
+            green,
+            blue,
+            button,
         };
 
         board.set_backlight(true)?;
@@ -163,6 +179,17 @@ impl WhisplayBoard {
     pub fn set_backlight(&mut self, enabled: bool) -> Result<()> {
         self.backlight.set_value(if enabled { 0 } else { 1 })?;
         Ok(())
+    }
+
+    pub fn set_rgb(&mut self, red: u8, green: u8, blue: u8) -> Result<()> {
+        self.red.set_value(if red > 0 { 0 } else { 1 })?;
+        self.green.set_value(if green > 0 { 0 } else { 1 })?;
+        self.blue.set_value(if blue > 0 { 0 } else { 1 })?;
+        Ok(())
+    }
+
+    pub fn button_pressed(&self) -> Result<bool> {
+        Ok(self.button.get_value()? == 1)
     }
 
     pub fn reset_lcd(&mut self) -> Result<()> {
@@ -297,6 +324,14 @@ fn request_output(config: &PlatformConfig, pin: u8, default_value: u8) -> Result
         default_value,
         "whisplay-rs",
     )?)
+}
+
+fn request_input(config: &PlatformConfig, pin: u8) -> Result<LineHandle> {
+    let line = config.pin(pin)?;
+    let mut chip = Chip::new(format!("/dev/gpiochip{}", line.chip))?;
+    Ok(chip
+        .get_line(line.offset)?
+        .request(LineRequestFlags::INPUT, 0, "whisplay-rs")?)
 }
 
 fn u16_pair(first: u16, second: u16) -> [u8; 4] {
