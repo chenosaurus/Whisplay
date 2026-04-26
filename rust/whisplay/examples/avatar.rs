@@ -544,16 +544,7 @@ impl Color {
 }
 
 fn make_background(width: usize, height: usize) -> Vec<u8> {
-    let mut data = vec![0_u8; width * height * 2];
-    let mut surface = Surface::new(width, height, &mut data);
-    for y in 0..height {
-        let shade = (5.0 + 12.0 * y as f32 / height as f32) as u8;
-        let blue = (18.0 + 16.0 * y as f32 / height as f32) as u8;
-        for x in 0..width {
-            surface.set_pixel(x as i32, y as i32, Color(1, shade, blue));
-        }
-    }
-    data
+    vec![0_u8; width * height * 2]
 }
 
 fn copy_rect(source: &[u8], dest: &mut [u8], source_width: usize, rect: Rect) {
@@ -710,7 +701,7 @@ fn pink() -> Color {
 }
 
 fn face_bg() -> Color {
-    Color(1, 4, 12)
+    Color(0, 0, 0)
 }
 
 fn line(surface: &mut Surface<'_>, points: &[(f32, f32)], color: Option<Color>, width: i32) {
