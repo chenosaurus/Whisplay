@@ -16,9 +16,19 @@ default = []
 emulator = ["dep:minifb"]
 
 [dev-dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+cpal = "0.15"
 ctrlc = { version = "3.5.2", features = ["termination"] }
 embedded-graphics = "0.8.2"
+env_logger = "0.11"
+futures-util = "0.3"
+libwebrtc = "0.3.30"
+livekit = { version = "0.7.37", features = ["rustls-tls-native-roots"] }
+livekit-api = { version = "0.4.19", features = ["rustls-tls-native-roots"] }
+log = "0.4"
 rand = "0.10.1"
+tokio = { version = "1", features = ["full"] }
 
 [[example]]
 name = "play_mp4"
@@ -31,3 +41,7 @@ path = "examples/frame_bench.rs"
 [[example]]
 name = "avatar"
 path = "examples/avatar.rs"
+
+[[example]]
+name = "avatar_client"
+path = "examples/avatar_client.rs"
