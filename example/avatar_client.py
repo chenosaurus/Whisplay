@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import signal
+import subprocess
 import threading
 import time
 
@@ -27,7 +28,7 @@ except ImportError:
 
 DEFAULT_SAMPLE_RATE = 48_000
 DEFAULT_CHANNELS = 1
-DEFAULT_WM8960_NAME = "wm8960soundcard"
+DEFAULT_WM8960_NAME = "wm8960"
 DEFAULT_INPUT_QUEUE_CAPACITY = 200
 
 
@@ -112,6 +113,40 @@ def require_livekit():
             "This example requires a recent livekit package with rtc.MediaDevices. "
             "Upgrade with: uv sync --upgrade-package livekit"
         )
+
+
+def find_wm8960_card():
+    try:
+        with open("/proc/asound/cards") as cards:
+            for line in cards:
+                if DEFAULT_WM8960_NAME in line.lower():
+                    return int(line.strip().split()[0])
+    except Exception:
+        pass
+    return None
+
+
+def setup_wm8960_mixer(card_index):
+    commands = [
+        ["amixer", "-c", str(card_index), "sset", "Left Output Mixer PCM", "on"],
+        ["amixer", "-c", str(card_index), "sset", "Right Output Mixer PCM", "on"],
+        ["amixer", "-c", str(card_index), "sset", "Speaker", "121"],
+        ["amixer", "-c", str(card_index), "sset", "Playback", "230"],
+        ["amixer", "-c", str(card_index), "sset", "Left Input Mixer Boost", "on"],
+        ["amixer", "-c", str(card_index), "sset", "Right Input Mixer Boost", "on"],
+        ["amixer", "-c", str(card_index), "sset", "Capture", "45"],
+        ["amixer", "-c", str(card_index), "sset", "ADC PCM", "195"],
+        ["amixer", "-c", str(card_index), "sset", "Left Input Boost Mixer LINPUT1", "2"],
+        ["amixer", "-c", str(card_index), "sset", "Right Input Boost Mixer RINPUT1", "2"],
+    ]
+    for command in commands:
+        try:
+            subprocess.run(command, capture_output=True, timeout=5, check=False)
+        except FileNotFoundError:
+            logging.warning("amixer not found; skipping WM8960 mixer setup")
+            return
+        except Exception:
+            logging.debug("WM8960 mixer command failed: %s", command, exc_info=True)
 
 
 def install_queue_full_exception_handler(loop):
@@ -313,6 +348,14 @@ async def run_audio_client(args, speech_levels, status, running):
         raise RuntimeError("provide --url or LIVEKIT_URL")
 
     token = resolve_token(args)
+    card_index = args.card if args.card is not None else find_wm8960_card()
+    if card_index is not None:
+        logging.info("configuring WM8960 mixer on ALSA card %s", card_index)
+        setup_wm8960_mixer(card_index)
+        os.environ.setdefault("AUDIODEV", f"hw:{card_index},0")
+    else:
+        logging.warning("WM8960 ALSA card not detected; audio device selection will use LiveKit defaults")
+
     devices = rtc.MediaDevices(
         input_sample_rate=args.sample_rate,
         output_sample_rate=args.sample_rate,
@@ -524,6 +567,7 @@ def build_parser():
         action="store_true",
         help="List available audio devices and exit.",
     )
+    parser.add_argument("--card", type=int, default=None, help="WM8960 ALSA card number.")
     parser.add_argument("-i", "--input-device", help="Input device index or name substring.")
     parser.add_argument("-o", "--output-device", help="Output device index or name substring.")
     parser.add_argument("--channel", type=int, default=0, help="Input channel index to capture.")
