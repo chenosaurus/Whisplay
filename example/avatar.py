@@ -54,8 +54,10 @@ def create_board(emulated=False, emulator_scale=None):
 
     try:
         from Driver.WhisPlay import WhisPlayBoard
-    except ImportError:
-        print("Error: Library 'Driver/WhisPlay.py' not found.")
+    except ImportError as exc:
+        print(f"Error: could not load WhisPlay hardware driver: {exc}")
+        print("For hardware, run with: uv run --extra hardware python example/avatar_client.py")
+        print("For desktop testing, add: --emulated")
         sys.exit(1)
 
     return WhisPlayBoard()

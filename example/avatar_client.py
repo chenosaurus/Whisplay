@@ -349,6 +349,10 @@ async def run_audio_client(args, speech_levels, status, running):
         asyncio.create_task(remove_remote_track(track, participant.identity))
 
     try:
+        logging.info("connecting to LiveKit room '%s' as '%s'", args.room_name, args.identity)
+        await room.connect(url, token, options=rtc.RoomOptions(auto_subscribe=True))
+        logging.info("connected to room %s", room.name)
+
         mic = devices.open_input(
             enable_aec=args.echo_cancellation,
             noise_suppression=args.noise_suppression,
@@ -361,10 +365,6 @@ async def run_audio_client(args, speech_levels, status, running):
             player = devices.open_output(output_device=output_device)
         else:
             logging.warning("audio playback disabled; avatar still reacts to subscribed audio")
-
-        logging.info("connecting to LiveKit room '%s' as '%s'", args.room_name, args.identity)
-        await room.connect(url, token, options=rtc.RoomOptions(auto_subscribe=True))
-        logging.info("connected to room %s", room.name)
 
         track = rtc.LocalAudioTrack.create_audio_track("whisplay-microphone", mic.source)
         publish_options = rtc.TrackPublishOptions()
