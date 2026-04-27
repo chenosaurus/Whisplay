@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-Publish the Whisplay / WM8960 microphone to a LiveKit room.
+Publish the Whisplay / WM8960 microphone to a LiveKit room and play room audio.
 
-Captures explicit 48 kHz PCM chunks with sounddevice, pushes them into a
-LiveKit AudioSource, and publishes that source as a microphone track.
+Uses LiveKit's MediaDevices helper for microphone capture, output playback, and
+audio processing features such as AEC, noise suppression, and AGC.
 
 Usage:
   LIVEKIT_URL=wss://... LIVEKIT_API_KEY=... LIVEKIT_API_SECRET=... \\
     uv run python example/publish_mic.py
 
   uv run python example/publish_mic.py --list-devices
-  uv run python example/publish_mic.py --device wm8960 --room-name whisplay
-  uv run python example/publish_mic.py --device 2 --channel 0
+  uv run python example/publish_mic.py --input-device wm8960 --output-device wm8960
+  uv run python example/publish_mic.py --input-device 2 --output-device 2 --channel 0
+  uv run python example/publish_mic.py --no-playback
 """
 
 import argparse
@@ -21,11 +22,7 @@ import math
 import os
 import queue
 import shutil
-import sys
 import time
-
-import numpy as np
-import sounddevice as sd
 
 try:
     from livekit import api, rtc  # pyright: ignore[reportMissingImports]
@@ -35,17 +32,21 @@ except ImportError:
 
 
 DEFAULT_SAMPLE_RATE = 48_000
+DEFAULT_CHANNELS = 1
 DEFAULT_DEVICE_NAME = "wm8960"
-DEFAULT_INPUT_CHANNELS = 2
-DEFAULT_PUBLISH_CHANNELS = 1
-DEFAULT_FRAME_MS = 20
 DEFAULT_ROOM_NAME = "whisplay-mic"
 DEFAULT_IDENTITY = "whisplay-publish-mic"
+DEFAULT_INPUT_QUEUE_CAPACITY = 100
 
 
 def require_livekit():
     if api is None or rtc is None:
         raise RuntimeError("LiveKit Python packages are required. Install with: uv sync")
+    if not hasattr(rtc, "MediaDevices"):
+        raise RuntimeError(
+            "This example requires a recent livekit package with rtc.MediaDevices. "
+            "Upgrade with: uv sync --upgrade-package livekit"
+        )
 
 
 def dbfs(value):
@@ -60,43 +61,86 @@ def meter_bar(value, width):
     return "#" * filled + "-" * (width - filled)
 
 
-def list_devices():
-    devices = sd.query_devices()
-    default_input = sd.default.device[0]
+def calculate_level(samples):
+    if not samples:
+        return 0.0, 0.0
+    peak = max(abs(int(sample)) for sample in samples) / 32767.0
+    square_sum = sum(int(sample) * int(sample) for sample in samples)
+    rms = math.sqrt(square_sum / len(samples)) / 32767.0
+    return max(0.0, min(1.0, rms)), max(0.0, min(1.0, peak))
 
-    print("Available input devices:")
-    for index, device in enumerate(devices):
-        if device["max_input_channels"] <= 0:
-            continue
-        marker = " (default)" if index == default_input else ""
+
+def list_audio_devices():
+    require_livekit()
+    devices = rtc.MediaDevices()
+    default_input = devices.default_input_device()
+    default_output = devices.default_output_device()
+
+    print("Available audio input devices:")
+    inputs = devices.list_input_devices()
+    if not inputs:
+        print("   no input devices found")
+    for dev in inputs:
+        marker = " (default)" if dev["index"] == default_input else ""
         print(
-            f"  [{index}] {device['name']}{marker} - "
-            f"{device['max_input_channels']}ch @ {device['default_samplerate']:.0f}Hz"
+            f"  [{dev['index']}] {dev['name']}{marker} - "
+            f"{dev['max_input_channels']}ch @ {dev['default_samplerate']:.0f}Hz"
+        )
+
+    print("\nAvailable audio output devices:")
+    outputs = devices.list_output_devices()
+    if not outputs:
+        print("   no output devices found")
+    for dev in outputs:
+        marker = " (default)" if dev["index"] == default_output else ""
+        print(
+            f"  [{dev['index']}] {dev['name']}{marker} - "
+            f"{dev['max_output_channels']}ch @ {dev['default_samplerate']:.0f}Hz"
         )
 
 
-def find_input_device(requested):
-    devices = sd.query_devices()
-    default_input = sd.default.device[0]
+def device_name_for_index(listing, index):
+    for dev in listing:
+        if dev["index"] == index:
+            return dev["name"]
+    return "system default" if index is None else f"device {index}"
+
+
+def select_device(devices, direction, requested):
+    listing = devices.list_input_devices() if direction == "input" else devices.list_output_devices()
+    default_index = (
+        devices.default_input_device() if direction == "input" else devices.default_output_device()
+    )
+
+    def find_by_name(name):
+        lowered = name.lower()
+        for dev in listing:
+            if lowered in dev["name"].lower():
+                return dev
+        return None
 
     if requested:
         if requested.isdigit():
             index = int(requested)
-            return index, sd.query_devices(index, "input")
+            for dev in listing:
+                if dev["index"] == index:
+                    logging.info("using requested %s device [%s] %s", direction, index, dev["name"])
+                    return index, dev["name"]
+            raise RuntimeError(f"{direction} device index {index} not found")
 
-        lowered = requested.lower()
-        for index, device in enumerate(devices):
-            if device["max_input_channels"] > 0 and lowered in device["name"].lower():
-                return index, device
-        raise SystemExit(f"Input device containing '{requested}' not found")
+        dev = find_by_name(requested)
+        if not dev:
+            raise RuntimeError(f"{direction} device containing '{requested}' not found")
+        logging.info("using requested %s device [%s] %s", direction, dev["index"], dev["name"])
+        return dev["index"], dev["name"]
 
-    for index, device in enumerate(devices):
-        if device["max_input_channels"] > 0 and DEFAULT_DEVICE_NAME in device["name"].lower():
-            return index, device
+    dev = find_by_name(DEFAULT_DEVICE_NAME)
+    if dev:
+        logging.info("auto-selected WM8960 %s device [%s] %s", direction, dev["index"], dev["name"])
+        return dev["index"], dev["name"]
 
-    if default_input is None or default_input < 0:
-        raise SystemExit("No default input device and no WM8960 input device found")
-    return default_input, sd.query_devices(default_input, "input")
+    logging.warning("WM8960 %s device not found; using system default", direction)
+    return default_index, device_name_for_index(listing, default_index)
 
 
 def resolve_token(args):
@@ -121,68 +165,24 @@ def resolve_token(args):
     )
 
 
-def select_publish_samples(indata, publish_channels, channel, mix_mono):
-    if publish_channels == 1:
-        if mix_mono and indata.shape[1] > 1:
-            mixed = np.mean(indata.astype(np.int32), axis=1)
-            return np.clip(mixed, -32768, 32767).astype(np.int16)
+async def monitor_mic_meter(track, meter_queue, sample_rate, running):
+    stream = rtc.AudioStream(track, sample_rate=sample_rate, num_channels=DEFAULT_CHANNELS)
+    try:
+        async for event in stream:
+            if not running.is_set():
+                break
 
-        selected_channel = 0 if channel is None else channel
-        return np.ascontiguousarray(indata[:, selected_channel])
-
-    return np.ascontiguousarray(indata[:, :publish_channels])
-
-
-def make_audio_callback(args, audio_queue, meter_queue):
-    def audio_callback(indata, frames, callback_time, status):
-        del frames, callback_time
-        if status and args.verbose:
-            print(f"\nPortAudio status: {status}", file=sys.stderr)
-
-        samples = select_publish_samples(
-            indata,
-            publish_channels=args.publish_channels,
-            channel=args.channel,
-            mix_mono=args.mix_mono,
-        )
-        samples = np.ascontiguousarray(samples, dtype=np.int16)
-
-        rms = float(np.sqrt(np.mean(np.square(samples.astype(np.float32) / 32768.0))))
-        peak = float(np.max(np.abs(samples.astype(np.float32) / 32768.0)))
-
-        chunk = samples.tobytes()
-        try:
-            audio_queue.put_nowait(chunk)
-        except queue.Full:
+            rms, peak = calculate_level(list(event.frame.data))
             try:
-                audio_queue.get_nowait()
-            except queue.Empty:
-                pass
-            audio_queue.put_nowait(chunk)
-
-        try:
-            meter_queue.put_nowait((rms, peak))
-        except queue.Full:
-            pass
-
-    return audio_callback
-
-
-async def publish_audio_chunks(source, audio_queue, args, running):
-    bytes_per_sample = np.dtype(np.int16).itemsize
-    while running.is_set():
-        chunk = await asyncio.to_thread(audio_queue.get)
-        samples_per_channel = len(chunk) // (args.publish_channels * bytes_per_sample)
-        if samples_per_channel == 0:
-            continue
-
-        frame = rtc.AudioFrame(
-            chunk,
-            sample_rate=args.sample_rate,
-            num_channels=args.publish_channels,
-            samples_per_channel=samples_per_channel,
-        )
-        await source.capture_frame(frame)
+                meter_queue.put_nowait((rms, peak))
+            except queue.Full:
+                try:
+                    meter_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                meter_queue.put_nowait((rms, peak))
+    finally:
+        await stream.aclose()
 
 
 async def render_meter(meter_queue, running, update_hz):
@@ -209,7 +209,7 @@ async def render_meter(meter_queue, running, update_hz):
         bar_width = max(12, min(50, columns - 43))
         clipping = " CLIP" if last_peak >= 0.99 else "     "
         line = (
-            f"\rRMS [{meter_bar(smoothed_rms, bar_width)}] "
+            f"\rMic [{meter_bar(smoothed_rms, bar_width)}] "
             f"{dbfs(smoothed_rms):6.1f} dBFS  "
             f"Peak {dbfs(last_peak):6.1f} dBFS{clipping}"
         )
@@ -224,37 +224,43 @@ async def run(args):
         raise RuntimeError("provide --url or LIVEKIT_URL")
 
     token = resolve_token(args)
-    device_index, device = find_input_device(args.device)
-    max_input_channels = int(device["max_input_channels"])
-    input_channels = args.input_channels or min(DEFAULT_INPUT_CHANNELS, max_input_channels)
-
-    if input_channels < 1:
-        raise RuntimeError("Input device reports no capture channels")
-    if input_channels > max_input_channels:
-        raise RuntimeError(
-            f"Requested {input_channels} input channels, but [{device_index}] "
-            f"{device['name']} only has {max_input_channels}"
-        )
-    if args.publish_channels < 1:
-        raise RuntimeError("--publish-channels must be positive")
-    if args.publish_channels > input_channels:
-        raise RuntimeError("--publish-channels cannot exceed opened --input-channels")
-    if args.channel is not None and args.channel >= input_channels:
-        raise RuntimeError(f"--channel must be less than opened input channel count ({input_channels})")
-
-    blocksize = max(1, int(args.sample_rate * args.frame_ms / 1000))
-    audio_queue = queue.Queue(maxsize=args.queue_capacity)
+    devices = rtc.MediaDevices(
+        input_sample_rate=args.sample_rate,
+        output_sample_rate=args.sample_rate,
+        num_channels=DEFAULT_CHANNELS,
+    )
+    room = rtc.Room()
     meter_queue = queue.Queue(maxsize=4)
     running = asyncio.Event()
     running.set()
 
-    room = rtc.Room()
-    source = rtc.AudioSource(
-        args.sample_rate,
-        args.publish_channels,
-        queue_size_ms=args.source_queue_ms,
-    )
-    track = rtc.LocalAudioTrack.create_audio_track("mic", source)
+    input_device, input_device_name = select_device(devices, "input", args.input_device)
+    output_device = None
+    output_device_name = "playback disabled"
+    if not args.no_playback:
+        output_device, output_device_name = select_device(devices, "output", args.output_device)
+
+    player = None
+    mic = None
+    meter_task = None
+    render_task = None
+    remote_tracks = set()
+
+    async def add_remote_track(track, participant_identity):
+        if track.kind != rtc.TrackKind.KIND_AUDIO:
+            return
+        logging.info("subscribed to audio from %s", participant_identity)
+        if player is not None:
+            await player.add_track(track)
+            remote_tracks.add(getattr(track, "sid", str(id(track))))
+
+    async def remove_remote_track(track, participant_identity):
+        if track.kind != rtc.TrackKind.KIND_AUDIO:
+            return
+        logging.info("unsubscribed from audio of %s", participant_identity)
+        if player is not None:
+            await player.remove_track(track)
+            remote_tracks.discard(getattr(track, "sid", str(id(track))))
 
     @room.on("participant_connected")
     def on_participant_connected(participant):
@@ -264,54 +270,80 @@ async def run(args):
     def on_participant_disconnected(participant):
         logging.info("participant disconnected: %s", participant.identity)
 
-    logging.info("connecting to LiveKit room '%s' as '%s'", args.room_name, args.identity)
-    await room.connect(url, token, options=rtc.RoomOptions(auto_subscribe=False))
-    logging.info("connected to room %s", room.name)
+    @room.on("track_subscribed")
+    def on_track_subscribed(track, _publication, participant):
+        asyncio.create_task(add_remote_track(track, participant.identity))
 
-    publish_options = rtc.TrackPublishOptions()
-    publish_options.source = rtc.TrackSource.SOURCE_MICROPHONE
-    publication = await room.local_participant.publish_track(track, publish_options)
-    logging.info("published microphone track %s", publication.sid)
-
-    print(
-        f"Capturing [{device_index}] {device['name']} at {args.sample_rate} Hz, "
-        f"{input_channels} input channel(s), publishing {args.publish_channels} channel(s)"
-    )
-    if args.publish_channels == 1 and not args.mix_mono:
-        print(f"Publishing input channel {0 if args.channel is None else args.channel}")
-    print("Press Ctrl+C to stop.\n")
-
-    publish_task = asyncio.create_task(publish_audio_chunks(source, audio_queue, args, running))
-    meter_task = asyncio.create_task(render_meter(meter_queue, running, args.update_hz))
+    @room.on("track_unsubscribed")
+    def on_track_unsubscribed(track, _publication, participant):
+        asyncio.create_task(remove_remote_track(track, participant.identity))
 
     try:
-        with sd.InputStream(
-            device=device_index,
-            channels=input_channels,
-            samplerate=args.sample_rate,
-            dtype="int16",
-            blocksize=blocksize,
-            callback=make_audio_callback(args, audio_queue, meter_queue),
-        ):
-            while True:
-                await asyncio.sleep(1)
+        mic = devices.open_input(
+            enable_aec=args.echo_cancellation,
+            noise_suppression=args.noise_suppression,
+            high_pass_filter=args.high_pass_filter,
+            auto_gain_control=args.auto_gain_control,
+            input_device=input_device,
+            queue_capacity=args.input_queue_capacity,
+            input_channel_index=args.channel,
+        )
+        if output_device is not None:
+            player = devices.open_output(output_device=output_device)
+
+        logging.info("connecting to LiveKit room '%s' as '%s'", args.room_name, args.identity)
+        await room.connect(url, token, options=rtc.RoomOptions(auto_subscribe=True))
+        logging.info("connected to room %s", room.name)
+
+        track = rtc.LocalAudioTrack.create_audio_track("mic", mic.source)
+        publish_options = rtc.TrackPublishOptions()
+        publish_options.source = rtc.TrackSource.SOURCE_MICROPHONE
+        publication = await room.local_participant.publish_track(track, publish_options)
+        logging.info("published microphone track %s", publication.sid)
+
+        if player is not None:
+            await player.start()
+            logging.info("room audio playback started")
+
+        print(f"Mic: {input_device_name} @ {args.sample_rate} Hz")
+        print(f"Speaker: {output_device_name}")
+        print(
+            "Audio processing: "
+            f"AEC={'on' if args.echo_cancellation else 'off'}, "
+            f"NS={'on' if args.noise_suppression else 'off'}, "
+            f"HPF={'on' if args.high_pass_filter else 'off'}, "
+            f"AGC={'on' if args.auto_gain_control else 'off'}"
+        )
+        print("Press Ctrl+C to stop.\n")
+
+        meter_task = asyncio.create_task(
+            monitor_mic_meter(track, meter_queue, args.sample_rate, running)
+        )
+        render_task = asyncio.create_task(render_meter(meter_queue, running, args.update_hz))
+
+        while True:
+            await asyncio.sleep(1)
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
         running.clear()
-        publish_task.cancel()
-        meter_task.cancel()
-        for task in (publish_task, meter_task):
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        tasks = [task for task in (meter_task, render_task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if mic is not None:
+            await mic.aclose()
+        if player is not None:
+            await player.aclose()
         await room.disconnect()
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Publish a WM8960 microphone to a LiveKit room.")
-    parser.add_argument("--list-devices", action="store_true", help="List input devices and exit.")
+    parser = argparse.ArgumentParser(
+        description="Publish a WM8960 microphone to LiveKit and play room audio."
+    )
+    parser.add_argument("--list-devices", action="store_true", help="List input/output devices and exit.")
     parser.add_argument("--url", help="LiveKit server URL. Can also be set with LIVEKIT_URL.")
     parser.add_argument("--token", help="LiveKit access token. Can also be set with LIVEKIT_TOKEN.")
     parser.add_argument("--api-key", help="LiveKit API key. Can also be set with LIVEKIT_API_KEY.")
@@ -319,65 +351,45 @@ def build_parser():
     parser.add_argument("--room-name", default=DEFAULT_ROOM_NAME, help="LiveKit room name.")
     parser.add_argument("--identity", default=DEFAULT_IDENTITY, help="LiveKit participant identity.")
     parser.add_argument(
-        "-d",
-        "--device",
+        "-i",
+        "--input-device",
         help="Input device index or name substring. Defaults to the first WM8960 input.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-device",
+        help="Output device index or name substring. Defaults to the first WM8960 output.",
     )
     parser.add_argument(
         "-r",
         "--sample-rate",
         type=int,
         default=DEFAULT_SAMPLE_RATE,
-        help="Capture and publish sample rate in Hz.",
-    )
-    parser.add_argument(
-        "--input-channels",
-        type=int,
-        default=None,
-        help="Channels to open from the input device. Defaults to 2 when available.",
-    )
-    parser.add_argument(
-        "--publish-channels",
-        type=int,
-        default=DEFAULT_PUBLISH_CHANNELS,
-        help="Number of channels to publish to LiveKit.",
+        help="Capture/playback sample rate in Hz.",
     )
     parser.add_argument(
         "--channel",
         type=int,
         default=0,
-        help="Zero-based input channel to publish when publishing mono.",
+        help="Zero-based input channel to capture as mono.",
     )
     parser.add_argument(
-        "--mix-mono",
-        action="store_true",
-        help="Mix all opened input channels down to mono instead of selecting --channel.",
-    )
-    parser.add_argument(
-        "--frame-ms",
-        type=float,
-        default=DEFAULT_FRAME_MS,
-        help="Audio frame size in milliseconds.",
-    )
-    parser.add_argument(
-        "--source-queue-ms",
+        "--input-queue-capacity",
         type=int,
-        default=100,
-        help="LiveKit AudioSource queue size in milliseconds.",
+        default=DEFAULT_INPUT_QUEUE_CAPACITY,
+        help="Max queued mic frames before dropping.",
     )
-    parser.add_argument(
-        "--queue-capacity",
-        type=int,
-        default=8,
-        help="Max captured chunks queued between sounddevice and LiveKit.",
-    )
+    parser.add_argument("--no-playback", action="store_true", help="Disable remote room audio playback.")
+    parser.add_argument("--echo-cancellation", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--noise-suppression", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--high-pass-filter", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--auto-gain-control", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--update-hz",
         type=float,
         default=20.0,
         help="CLI meter refresh rate.",
     )
-    parser.add_argument("--verbose", action="store_true", help="Print PortAudio callback statuses.")
     return parser
 
 
@@ -386,22 +398,14 @@ def main():
     args = build_parser().parse_args()
 
     if args.list_devices:
-        list_devices()
+        list_audio_devices()
         return
     if args.sample_rate <= 0:
         raise SystemExit("--sample-rate must be positive")
-    if args.input_channels is not None and args.input_channels <= 0:
-        raise SystemExit("--input-channels must be positive")
-    if args.publish_channels <= 0:
-        raise SystemExit("--publish-channels must be positive")
     if args.channel is not None and args.channel < 0:
         raise SystemExit("--channel must be zero or greater")
-    if args.frame_ms <= 0:
-        raise SystemExit("--frame-ms must be positive")
-    if args.source_queue_ms <= 0:
-        raise SystemExit("--source-queue-ms must be positive")
-    if args.queue_capacity <= 0:
-        raise SystemExit("--queue-capacity must be positive")
+    if args.input_queue_capacity <= 0:
+        raise SystemExit("--input-queue-capacity must be positive")
     if args.update_hz <= 0:
         raise SystemExit("--update-hz must be positive")
 
