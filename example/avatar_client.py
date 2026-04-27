@@ -28,6 +28,7 @@ except ImportError:
 DEFAULT_SAMPLE_RATE = 48_000
 DEFAULT_CHANNELS = 1
 DEFAULT_WM8960_NAME = "wm8960soundcard"
+DEFAULT_INPUT_QUEUE_CAPACITY = 200
 
 
 class SpeechLevels:
@@ -111,6 +112,22 @@ def require_livekit():
             "This example requires a recent livekit package with rtc.MediaDevices. "
             "Upgrade with: uv sync --upgrade-package livekit"
         )
+
+
+def install_queue_full_exception_handler(loop):
+    previous_handler = loop.get_exception_handler()
+
+    def handle_exception(loop, context):
+        exception = context.get("exception")
+        message = context.get("message", "")
+        if isinstance(exception, asyncio.QueueFull) and "Queue.put_nowait" in message:
+            return
+        if previous_handler is not None:
+            previous_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handle_exception)
 
 
 def resolve_token(args):
@@ -289,6 +306,7 @@ async def monitor_mic_audio(track, status, running, sample_rate):
 
 async def run_audio_client(args, speech_levels, status, running):
     require_livekit()
+    install_queue_full_exception_handler(asyncio.get_running_loop())
 
     url = args.url or os.getenv("LIVEKIT_URL")
     if not url:
@@ -359,6 +377,7 @@ async def run_audio_client(args, speech_levels, status, running):
             high_pass_filter=False,
             auto_gain_control=args.auto_gain_control,
             input_device=input_device,
+            queue_capacity=args.input_queue_capacity,
             input_channel_index=args.channel,
         )
         if output_device is not None:
@@ -530,6 +549,12 @@ def build_parser():
     parser.add_argument("--echo-cancellation", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--noise-suppression", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--auto-gain-control", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--input-queue-capacity",
+        type=int,
+        default=DEFAULT_INPUT_QUEUE_CAPACITY,
+        help="Max queued 10 ms mic frames before dropping; 0 makes the queue unbounded.",
+    )
     parser.add_argument("--no-audio", action="store_true", help="Run only the avatar display.")
     parser.add_argument("--no-playback", action="store_true", help="Disable remote room audio playback.")
     parser.add_argument("--url", help="LiveKit server URL. Can also be set with LIVEKIT_URL.")
@@ -552,6 +577,8 @@ def main():
 
     if not 0.0 <= args.volume <= 1.0:
         raise SystemExit("--volume must be between 0.0 and 1.0")
+    if args.input_queue_capacity < 0:
+        raise SystemExit("--input-queue-capacity must be 0 or greater")
 
     if args.list_devices:
         list_audio_devices()
