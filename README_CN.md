@@ -136,6 +136,17 @@ sudo bash run_test.sh
 ## 示例程序
 
 `example` 目录下提供了 Python 示例，帮助您快速上手。
+Python 依赖通过仓库根目录的 `uv` 管理：
+
+```shell
+uv sync
+```
+
+在 Linux 硬件上运行示例时，请包含 GPIO/SPI 额外依赖：
+
+```shell
+uv sync --extra hardware
+```
 
 #### `run_test.sh`
 
@@ -167,7 +178,7 @@ sudo bash run_test.sh
   * **使用方法**:
     ```shell
     cd example
-    sudo python3 test2.py
+    uv run --extra hardware python test2.py
     ```
     **效果**: 程序显示一张表示录音阶段的图片。按下按钮停止录音后，会切换到回放阶段并显示不同图片，同时播放录制的音频。播放结束后返回录音阶段。
 
@@ -187,7 +198,8 @@ sudo bash run_test.sh
   * **使用方法**:
     在 `example` 目录下执行：
     ```shell
-    sudo python3 play_mp4.py --file data/whisplay_test.mp4
+    cd example
+    uv run --extra hardware python play_mp4.py --file data/whisplay_test.mp4
     ```
     **效果**: 指定的 MP4 视频将在 LCD 屏幕上播放。
 

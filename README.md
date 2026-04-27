@@ -131,6 +131,17 @@ All driver files are located in the `Driver` directory and primarily include:
 ## Example Programs
 
 The `example` directory contains Python examples to help you get started quickly.
+Python dependencies are managed with `uv` from the repository root:
+
+```shell
+uv sync
+```
+
+For hardware examples on Linux, include the GPIO/SPI extra:
+
+```shell
+uv sync --extra hardware
+```
 
 #### `run_test.sh`
 
@@ -162,7 +173,7 @@ The `example` directory contains Python examples to help you get started quickly
   * **Usage**:
     ```shell
     cd example
-    sudo python3 test2.py
+    uv run --extra hardware python test2.py
     ```
     **Effect**: The script displays an image indicating the recording stage. Pressing the button to stop recording will switch to the playback stage, displaying a different image while playing back the recorded audio. After playback, it returns to the recording stage again.
 
@@ -182,7 +193,8 @@ The `example` directory contains Python examples to help you get started quickly
   * **Usage**:
     execute the script in the `example` directory:
     ```shell
-    sudo python3 play_mp4.py --file data/whisplay_test.mp4
+    cd example
+    uv run --extra hardware python play_mp4.py --file data/whisplay_test.mp4
     ```
     **Effect**: The specified MP4 video will be played on the LCD screen.
 

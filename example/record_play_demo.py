@@ -8,13 +8,13 @@ Features:
   - After playback, return to idle state (LCD shows idle screen, LED blue breathing)
 
 Dependencies:
-  sudo apt install python3-pil alsa-utils
+  sudo apt install alsa-utils
+  uv sync --extra hardware
 
 Usage:
-  cd example
-  sudo python3 record_play_demo.py
+  uv run --extra hardware python example/record_play_demo.py
   # Or specify sound card:
-  sudo python3 record_play_demo.py --card 1
+  uv run --extra hardware python example/record_play_demo.py --card 1
 """
 
 import sys
@@ -25,13 +25,14 @@ import threading
 import subprocess
 import signal
 
-sys.path.append(os.path.abspath("../Driver"))
-from WhisPlay import WhisPlayBoard
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.append(PROJECT_ROOT)
+from Driver.WhisPlay import WhisPlayBoard
 
 from PIL import Image, ImageDraw, ImageFont
 
 # ==================== Configuration ====================
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RECORD_FILE = os.path.join(SCRIPT_DIR, "data", "recorded.wav")
 MAX_RECORD_SEC = 60  # Maximum recording duration (seconds)
 

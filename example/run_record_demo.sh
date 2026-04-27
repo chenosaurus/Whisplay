@@ -24,4 +24,4 @@ amixer -c "$card_index" sset 'Speaker' 121                2>/dev/null
 amixer -c "$card_index" sset 'Playback' 230               2>/dev/null
 
 cd "$(dirname "$0")"
-AUDIODEV="hw:$card_index,0" python3 record_play_demo.py --card "$card_index" "$@"
+AUDIODEV="hw:$card_index,0" uv run --extra hardware python record_play_demo.py --card "$card_index" "$@"

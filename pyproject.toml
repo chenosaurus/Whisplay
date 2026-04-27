@@ -1,0 +1,22 @@
+[project]
+name = "whisplay-examples"
+version = "0.1.0"
+description = "Python examples for the PiSugar WhisPlay HAT"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "Pillow",
+    "livekit",
+    "livekit-api",
+    "numpy",
+    "pygame",
+    "sounddevice",
+]
+
+[project.optional-dependencies]
+hardware = [
+    "gpiod; sys_platform == 'linux'",
+    "spidev; sys_platform == 'linux'",
+]
+
+[tool.uv]
+package = false

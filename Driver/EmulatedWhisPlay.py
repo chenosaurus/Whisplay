@@ -14,7 +14,7 @@ class EmulatedWhisPlayBoard:
             import pygame
         except ImportError as exc:
             raise RuntimeError(
-                "The WhisPlay emulator requires pygame. Install it with: pip install pygame"
+                "The WhisPlay emulator requires pygame. Install dependencies with: uv sync"
             ) from exc
 
         self._pygame = pygame

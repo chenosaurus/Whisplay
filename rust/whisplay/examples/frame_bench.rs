@@ -64,7 +64,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("display fps: {:.1}", fps);
     println!();
     println!("Compare with the Python video path by running:");
-    println!("  cd ../../example && python3 play_mp4.py --file data/whisplay_test.mp4");
+    println!("  uv run --extra hardware python example/play_mp4.py --file example/data/whisplay_test.mp4");
 
     display.reset()?;
     Ok(())
